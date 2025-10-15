@@ -12,7 +12,7 @@ if not TOKEN:
     exit(1)
 
 # Режим розбору Markdown для форматування
-bot = Bot(token=TOKEN, parse_mode='Markdown')
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # --- Обробники команд ---

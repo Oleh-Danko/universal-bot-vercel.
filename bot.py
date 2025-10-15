@@ -3,6 +3,10 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiohttp import web 
+# --- ДОДАНІ БІБЛІОТЕКИ ДЛЯ ПАРСИНГУ ---
+import requests
+from bs4 import BeautifulSoup
+# ---------------------------------------
 
 # 🔑 Токен береться зі змінних оточення Render (це безпечно)
 TOKEN = os.environ.get("TOKEN") 
@@ -21,18 +25,43 @@ dp = Dispatcher()
 async def start_command(message: types.Message):
     await message.answer(
         "👋 Привіт! Я бот, запущений на Render. Я не сплю, бо маю веб-сервер!\n"
-        "Надішліть /news, щоб перевірити, чи працює основна логіка."
+        "Надішліть /news, щоб перевірити, чи працює основна логіка (з парсингом)."
     )
 
 @dp.message(Command("news"))
 async def news_command(message: types.Message):
-    # Тут буде Playwright-парсер, але поки що це просто тестова відповідь
-    await message.answer(
-        "⏳ Бот працює на Render!\n"
-        "Парсинг ще не інтегровано, але бот відповідає і працює 24/7."
-    )
+    # --- НОВА ЛОГІКА ПАРСИНГУ ---
+    try:
+        # Використовуємо розділ Markets з Bloomberg
+        url = "https://www.bloomberg.com/markets" # [cite: 2025-10-14]
+        
+        # Використовуємо requests, щоб отримати HTML сторінки
+        response = requests.get(url)
+        response.raise_for_status() # Перевірка, чи не було помилок HTTP
+        
+        # Розбір HTML за допомогою BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Спрощений пошук заголовка (потрібен актуальний клас)
+        # На Bloomberg заголовок часто має клас 'headline' або просто знаходиться в h1/h2
+        headline_element = soup.find(['h1', 'h2'], class_='headline') or soup.find('h1')
+        
+        if headline_element:
+            text = f"📰 Остання новина з Bloomberg (Markets):\n{headline_element.text.strip()}"
+        else:
+            text = "❌ Не вдалося знайти заголовки на Bloomberg. (Можливо, клас заголовка змінився)."
+        
+        await message.answer(text)
+        
+    except requests.exceptions.RequestException as req_err:
+        await message.answer(f"❌ Помилка мережі при доступі до Bloomberg: {req_err}")
+    except Exception as e:
+        await message.answer(f"❌ Загальна помилка парсингу: {e}")
+    # ---------------------------
+
 
 # --- Web Server для Render (щоб не засинав) ---
+# ... (Інший код залишається без змін) ...
 
 async def handle_ping(request):
     """Простий обробник для пінг-запитів Render"""

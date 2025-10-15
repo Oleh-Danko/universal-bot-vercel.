@@ -1,17 +1,16 @@
 import os
 import asyncio
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiohttp import web 
-# --- ДОДАНІ БІБЛІОТЕКИ ДЛЯ ПАРСИНГУ ---
-import requests
-from bs4 import BeautifulSoup
+from aiohttp import web # ✅ ІМПОРТ ДЛЯ WEB-СЕРВЕРА
+import requests # Залишено, хоча не використовується
+from bs4 import BeautifulSoup # Залишено, хоча не використовується
 # ---------------------------------------
 
 # НОВИЙ ІМПОРТ: Підключаємо адаптивний парсер
-from bloomberg_parser import fetch_bloomberg #
+from bloomberg_parser import fetch_bloomberg 
 
-# 🔑 Токен береться зі змінних оточення Render (це безпечно)
+# 🔑 Токен береться зі змінних оточення Render
 TOKEN = os.environ.get("TOKEN") 
 
 if not TOKEN:
@@ -31,24 +30,26 @@ async def start_command(message: types.Message):
         "Надішліть /news, щоб перевірити, чи працює основна логіка (з парсингом)."
     )
 
-# ПОВНА ЗАМІНА: Використовуємо адаптивну функцію замість requests/BeautifulSoup
 @dp.message(Command("news"))
 async def news_command(message: types.Message):
     await message.answer("⏳ Отримую свіжі новини з Bloomberg...")
     try:
-        titles = await fetch_bloomberg()
-        if titles:
+        # Припускаємо, що fetch_bloomberg повертає список заголовків, або порожній список/None
+        titles = await fetch_bloomberg() 
+        
+        # Перевіряємо, чи повернулися новини
+        if titles and isinstance(titles, list):
             formatted = "\n\n".join([f"🔹 {t}" for t in titles])
             await message.answer(f"📰 Топ новин Bloomberg:\n\n{formatted}")
         else:
-            await message.answer("⚠️ Не вдалося отримати новини.")
+            await message.answer("⚠️ Не вдалося отримати новини. Можливо, Bloomberg заблокував IP.")
+            
     except Exception as e:
-        # Це повідомлення для користувача. Деталі помилки підуть адміну через send_admin_alert
+        # Це повідомлення для користувача. Деталі помилки підуть адміну
         await message.answer("❌ Парсинг не вдався. Адміністратора повідомлено про проблему.")
-
+        # Тут має бути виклик функції send_admin_alert(f"Помилка в /news: {e}"), якщо вона є у коді
 
 # --- Web Server для Render (щоб не засинав) ---
-# ... (Інший код залишається без змін) ...
 
 async def handle_ping(request):
     """Простий обробник для пінг-запитів Render"""
@@ -57,14 +58,20 @@ async def handle_ping(request):
 async def start_web_server():
     """Запускає веб-сервер на порту, який очікує Render (PORT)"""
     # Render передає порт через змінну оточення PORT
+    # Це необхідно для Health Check
     port = int(os.environ.get("PORT", 8080)) 
     app = web.Application()
     app.router.add_get('/', handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
+    # Створюємо сайт
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     print(f"✅ Web server started on port {port}")
+    
+    # Запобігаємо завершенню асинхронної функції
+    while True:
+        await asyncio.sleep(3600) # Чекаємо 1 годину
 
 # --- Головна функція запуску ---
 

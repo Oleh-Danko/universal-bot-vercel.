@@ -19,3 +19,6 @@ pyee==13.0.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 yarl==1.22.0
+python-telegram-bot==20.9
+requests
+beautifulsoup4

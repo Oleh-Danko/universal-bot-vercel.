@@ -1,24 +1,121 @@
-import asyncio
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from playwright.sync_api import sync_playwright
+    "https://techcrunch.com/",import os
+import json
 import logging
-from typing import List
+from urllib.parse import urlencode
 
-logging.basicConfig(level=logging.INFO)
+import requests
+from bs4 import BeautifulSoup
+from telegram import Update
 
-# 🔑 Твій токен
-TOKEN = "8392167879:AAG9GgPCXrajvdZca5vJcYopk3HO5w2hBhE"
+# --- Конфігурація ---
+# Токен береться зі змінних оточення Vercel
+BOT_TOKEN = os.environ.get("BOT_TOKEN") 
+TELEGRAM_URL = f'https://api.telegram.org/bot{BOT_TOKEN}/'
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+# --- Логіка пошуку новин (та ж, що й раніше) ---
+def search_and_format_news(query="українські новини", count=5):
+    """Виконує пошук новин Google і форматує їх."""
 
-# 🌍 ІНОЗЕМНІ ДЖЕРЕЛА (ОЧИЩЕНИЙ СПИСОК: видалено Bloomberg, який блокує)
-FOREIGN_FEEDS = [
-    "https://www.reuters.com/business/",
-    "https://www.nytimes.com/international/section/business",
-    "https://www.cnbc.com/markets/",
-    "https://techcrunch.com/",
+    params = {'q': query, 'hl': 'uk', 'gl': 'UA', 'ceid': 'UA:uk', 'tbm': 'nws'}
+    google_url = f'https://www.google.com/search?{urlencode(params)}'
+
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(google_url, headers=headers)
+        response.raise_for_status() 
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Шукаємо блоки новин
+        news_blocks = soup.find_all('div', class_='xUVHie') or soup.find_all('div', class_='SoaQtd') 
+
+        news_list = []
+
+        for block in news_blocks[:count]:
+            link_tag = block.find('a', class_='WlydOe')
+            title_tag = block.find('div', class_='BNeawe vvV-b')
+            source_tag = block.find('div', class_='BNeawe UPmitb')
+
+            if link_tag and title_tag and source_tag:
+                title = title_tag.get_text()
+                link = link_tag['href']
+                source = source_tag.get_text().split(' · ')[0]
+                news_list.append(f"*{title}*\nДжерело: {source}\n[Читати далі]({link})\n")
+
+        if not news_list:
+             return "Вибачте, не вдалося знайти свіжих новин."
+
+        return "🗞️ **Ось свіжі українські новини:**\n\n" + "\n".join(news_list)
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Google Request Error: {e}")
+        return "Помилка при запиті до Google."
+    except Exception as e:
+        logging.error(f"Parsing Error: {e}")
+        return "Невідома помилка при парсингу."
+
+# --- Функція відповіді Telegram ---
+def send_telegram_response(chat_id, text):
+    """Відправляє відповідь назад у Telegram API."""
+    url = TELEGRAM_URL + 'sendMessage'
+    payload = {
+        'chat_id': chat_id,
+        'text': text,
+        'parse_mode': 'Markdown'
+    }
+    requests.post(url, json=payload)
+
+# --- Основний обробник оновлень ---
+def handle_update(update_json):
+    """Обробляє вхідний оновлення (Update) від Telegram."""
+
+    # Використовуємо функцію Update.de_json для коректного парсингу
+    update = Update.de_json(update_json, None) 
+
+    if update.message and update.message.text:
+        text = update.message.text
+        chat_id = update.message.chat_id
+
+        response_text = ""
+
+        if text == '/start':
+            response_text = "Привіт! Я — універсальний Telegram-бот для новин. Надішліть /news, щоб отримати свіжі заголовки."
+        elif text == '/news':
+            response_text = search_and_format_news()
+        else:
+            response_text = "Вибачте, я розумію лише команди /start та /news."
+
+        send_telegram_response(chat_id, response_text)
+
+    return "ok" 
+
+# --- Головна функція для Vercel (Serverless Entry Point) ---
+def handler(event, context):
+    """
+    Основна функція-обробник, яку викликає Vercel при Webhook-запиті.
+    """
+    if 'body' in event and event['httpMethod'] == 'POST':
+        try:
+            update_json = json.loads(event['body'])
+            handle_update(update_json)
+            return {
+                'statusCode': 200,
+                'body': json.dumps({'status': 'processed'})
+            }
+        except Exception as e:
+            logging.error(f"Помилка обробки оновлення: {e}")
+            return {
+                'statusCode': 500,
+                'body': json.dumps({'error': str(e)})
+            }
+
+    # Відповідь на GET-запит (при прямому переході на URL)
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'message': 'Бот очікує Webhook від Telegram.'})
+    }
     # Додаємо більш стійкі загальні джерела
     "https://www.bbc.com/business",
     "https://edition.cnn.com/business",

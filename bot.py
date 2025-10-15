@@ -8,6 +8,9 @@ import requests
 from bs4 import BeautifulSoup
 # ---------------------------------------
 
+# НОВИЙ ІМПОРТ: Підключаємо адаптивний парсер
+from bloomberg_parser import fetch_bloomberg #
+
 # 🔑 Токен береться зі змінних оточення Render (це безпечно)
 TOKEN = os.environ.get("TOKEN") 
 
@@ -28,36 +31,20 @@ async def start_command(message: types.Message):
         "Надішліть /news, щоб перевірити, чи працює основна логіка (з парсингом)."
     )
 
+# ПОВНА ЗАМІНА: Використовуємо адаптивну функцію замість requests/BeautifulSoup
 @dp.message(Command("news"))
 async def news_command(message: types.Message):
-    # --- НОВА ЛОГІКА ПАРСИНГУ ---
+    await message.answer("⏳ Отримую свіжі новини з Bloomberg...")
     try:
-        # Використовуємо розділ Markets з Bloomberg
-        url = "https://www.bloomberg.com/markets" # [cite: 2025-10-14]
-        
-        # Використовуємо requests, щоб отримати HTML сторінки
-        response = requests.get(url)
-        response.raise_for_status() # Перевірка, чи не було помилок HTTP
-        
-        # Розбір HTML за допомогою BeautifulSoup
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Спрощений пошук заголовка (потрібен актуальний клас)
-        # На Bloomberg заголовок часто має клас 'headline' або просто знаходиться в h1/h2
-        headline_element = soup.find(['h1', 'h2'], class_='headline') or soup.find('h1')
-        
-        if headline_element:
-            text = f"📰 Остання новина з Bloomberg (Markets):\n{headline_element.text.strip()}"
+        titles = await fetch_bloomberg()
+        if titles:
+            formatted = "\n\n".join([f"🔹 {t}" for t in titles])
+            await message.answer(f"📰 Топ новин Bloomberg:\n\n{formatted}")
         else:
-            text = "❌ Не вдалося знайти заголовки на Bloomberg. (Можливо, клас заголовка змінився)."
-        
-        await message.answer(text)
-        
-    except requests.exceptions.RequestException as req_err:
-        await message.answer(f"❌ Помилка мережі при доступі до Bloomberg: {req_err}")
+            await message.answer("⚠️ Не вдалося отримати новини.")
     except Exception as e:
-        await message.answer(f"❌ Загальна помилка парсингу: {e}")
-    # ---------------------------
+        # Це повідомлення для користувача. Деталі помилки підуть адміну через send_admin_alert
+        await message.answer("❌ Парсинг не вдався. Адміністратора повідомлено про проблему.")
 
 
 # --- Web Server для Render (щоб не засинав) ---

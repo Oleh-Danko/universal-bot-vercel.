@@ -31,24 +31,28 @@ HEADERS = {
     "DNT": "1",
 }
 
-# --- Telegram повідомлення про помилки ---
-# ADMIN_ID і TOKEN беруться зі змінних оточення Render
-ADMIN_ID = os.getenv("ADMIN_ID") 
-BOT_TOKEN = os.getenv("TOKEN") 
-bot = Bot(token=BOT_TOKEN)
-
 # --- Логер ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BloombergParser")
 
+# --- Глобальний об'єкт Bot (ініціалізується, якщо токен є) ---
+# 🔑 Змінні оточення беруться всередині функції send_admin_alert
+# ВИДАЛЕНО: BOT_TOKEN = os.getenv("TOKEN") 
+# ВИДАЛЕНО: bot = Bot(token=BOT_TOKEN) 
+# ---
 
 async def send_admin_alert(text: str):
     """Надсилає повідомлення адміну у Telegram."""
-    # Перевіряємо, чи є ADMIN_ID, щоб уникнути помилок
-    if ADMIN_ID and BOT_TOKEN:
+    # Отримуємо змінні всередині, щоб не було NoneType при імпорті
+    ADMIN_ID = os.getenv("ADMIN_ID") 
+    BOT_TOKEN = os.getenv("TOKEN")
+    
+    # Створюємо об'єкт Bot тільки якщо є токен
+    if BOT_TOKEN and ADMIN_ID:
         try:
-            # Використовуємо os.getenv("ADMIN_ID") як chat_id
-            await bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ [Bloomberg Parser]\n{text}")
+            temp_bot = Bot(token=BOT_TOKEN)
+            await temp_bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ [Bloomberg Parser]\n{text}")
+            await temp_bot.session.close() # Закриваємо сесію після використання
         except Exception as e:
             logger.error(f"Помилка при відправці логу адміну: {e}")
     else:
@@ -60,7 +64,8 @@ async def fetch_bloomberg():
     html = await _get_html()
     if not html:
         await send_admin_alert("❌ Не вдалося отримати HTML Bloomberg (усі методи провалилися).")
-        raise Exception("Bloomberg parsing failed.")
+        # ТУТ ТЕЖ ПРИБРАНО raise Exception, щоб не було збою всієї програми
+        return []
 
     # Логіка парсингу: шукаємо заголовки <h3>
     soup = BeautifulSoup(html, "html.parser")
@@ -109,9 +114,10 @@ async def _get_html():
     if async_playwright:
         try:
             logger.info("➡️ Спроба через Playwright...")
+            # Playwright повинен запускатися асинхронно
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
+                page = await browser.new_page(extra_http_headers=HEADERS) # Додаємо заголовки сюди
                 await page.goto(URL, timeout=30000)
                 html = await page.content()
                 await browser.close()

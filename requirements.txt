@@ -4,4 +4,4 @@ requests
 beautifulsoup4
 cloudscraper
 playwright
-aiohttp==3.9.1
+playwright-stealth

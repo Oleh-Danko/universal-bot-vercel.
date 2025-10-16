@@ -1,6 +1,6 @@
-aiogram
+aiogram==3.13.1
 aiohttp
-cloudscraper
 beautifulsoup4
+cloudscraper
 playwright
 playwright-stealth

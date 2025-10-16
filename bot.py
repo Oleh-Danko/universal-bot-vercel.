@@ -1,59 +1,82 @@
-import logging
+# bot.py
 import os
+import logging
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from bloomberg_parser import fetch_bloomberg
 
-API_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://universal-bot-live.onrender.com/webhook
+from bloomberg_parser import fetch_bloomberg  # our parser (expects top_n param)
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
+LOG = logging.getLogger("WebhookBot")
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("Environment variable BOT_TOKEN is required")
+
+# WEBHOOK_URL should be base URL (e.g. https://universal-bot-live.onrender.com)
+WEBHOOK_BASE = os.getenv("WEBHOOK_URL")
+if not WEBHOOK_BASE:
+    raise RuntimeError("Environment variable WEBHOOK_URL is required (base URL)")
+
+WEBHOOK_BASE = WEBHOOK_BASE.rstrip("/")
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# === Команди ===
-@dp.message(commands=['start'])
-async def start_cmd(message: types.Message):
-    await message.answer("👋 Бот активний і працює через Webhook!")
+# ---------- Handlers ----------
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer("👋 Привіт! Я бот, запущений на Render через Webhook. Надішліть /news")
 
-@dp.message(commands=['news'])
-async def get_news(message: types.Message):
+@dp.message(Command("news"))
+async def cmd_news(message: types.Message):
+    await message.answer("⏳ Отримую свіжі новини з Bloomberg...")
     try:
-        headlines = await fetch_bloomberg()
+        headlines = await fetch_bloomberg(top_n=10)
         if not headlines:
-            await message.answer("⚠️ Не вдалося отримати новини. Можливо, сайт заблокував запит або сталася помилка.")
+            await message.answer("❌ Парсинг не вдався. Можливо, сайт заблокував запит або сталася помилка.")
             return
-        formatted = "\n".join([f"• {t}" for t in headlines[:10]])
-        await message.answer(f"📰 Останні новини Bloomberg:\n\n{formatted}")
+        formatted = "\n\n".join([f"🔹 {t}" for t in headlines])
+        await message.answer(f"📰 Топ новин Bloomberg:\n\n{formatted}")
     except Exception as e:
-        logging.exception("Помилка під час виконання /news")
-        await message.answer(f"❌ Помилка: {e}")
+        LOG.exception("Помилка в /news")
+        await message.answer(f"❌ Помилка при парсингу: {e}")
 
-# === Створення aiohttp застосунку ===
-async def on_startup(app):
+# ---------- Webhook & Health ----------
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
+
+async def on_startup(app: web.Application):
+    # встановлюємо webhook
     await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"Webhook встановлено: {WEBHOOK_URL}")
+    LOG.info("Setting webhook to %s", WEBHOOK_URL)
 
-async def on_shutdown(app):
-    await bot.delete_webhook()
-    logging.info("Webhook видалено")
+async def on_shutdown(app: web.Application):
+    try:
+        await bot.delete_webhook()
+        LOG.info("Webhook deleted")
+    except Exception:
+        LOG.exception("Error deleting webhook")
 
-app = web.Application()
-
-# ✅ HEALTHCHECK endpoint (для Render)
-async def healthcheck(request):
+async def health(request):
     return web.Response(text="OK", status=200)
 
-app.router.add_get("/", healthcheck)
-app.router.add_get("/health", healthcheck)
+# Create app
+app = web.Application()
+# health endpoints for Render
+app.router.add_get("/", health)
+app.router.add_get("/health", health)
 
-# === Webhook handler ===
-SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
+# register webhook handler at path
+SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
 setup_application(app, dp, bot=bot)
 
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    port = int(os.getenv("PORT", 10000))
+    LOG.info("🌐 Starting web server on 0.0.0.0:%d", port)
+    web.run_app(app, host="0.0.0.0", port=port)

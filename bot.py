@@ -2,7 +2,8 @@ import os
 import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiohttp import web # ✅ ІМПОРТ ДЛЯ WEB-СЕРВЕРА
+from aiogram.enums import ParseMode # ✅ ДОДАНО: Для ParseMode.HTML
+from aiohttp import web 
 import requests # Залишено, хоча не використовується
 from bs4 import BeautifulSoup # Залишено, хоча не використовується
 # ---------------------------------------
@@ -10,16 +11,19 @@ from bs4 import BeautifulSoup # Залишено, хоча не використ
 # НОВИЙ ІМПОРТ: Підключаємо адаптивний парсер
 from bloomberg_parser import fetch_bloomberg 
 
-# 🔑 Токен береться зі змінних оточення Render
-TOKEN = os.environ.get("TOKEN") 
+# --- Ініціалізація бота (ВИПРАВЛЕНО) ---
+# 🔑 Тепер беремо змінну BOT_TOKEN
+TOKEN = os.environ.get("BOT_TOKEN") 
 
 if not TOKEN:
-    print("Помилка: Не знайдено змінну оточення TOKEN. Перевірте Render settings.")
-    exit(1)
+    # ❌ Жорстко зупиняємо, якщо токен не знайдено, з новою помилкою
+    raise ValueError("❌ Environment variable BOT_TOKEN not found! Please set it on Render.")
 
-# Режим розбору Markdown для форматування
-bot = Bot(token=TOKEN)
+# ✅ ВИПРАВЛЕНО: Додано parse_mode=ParseMode.HTML
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
+# ---------------------------------------
+
 
 # --- Обробники команд ---
 
@@ -53,12 +57,11 @@ async def news_command(message: types.Message):
 
 async def handle_ping(request):
     """Простий обробник для пінг-запитів Render"""
-    return web.Response(text="I'm alive and ready to work!")
+    return web.Response(text="✅ Bot is alive") # Змінено текст для чіткості
 
 async def start_web_server():
     """Запускає веб-сервер на порту, який очікує Render (PORT)"""
     # Render передає порт через змінну оточення PORT
-    # Це необхідно для Health Check
     port = int(os.environ.get("PORT", 8080)) 
     app = web.Application()
     app.router.add_get('/', handle_ping)
@@ -67,7 +70,7 @@ async def start_web_server():
     # Створюємо сайт
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"✅ Web server started on port {port}")
+    print(f"🌐 Keepalive running on port {port}")
     
     # Запобігаємо завершенню асинхронної функції
     while True:

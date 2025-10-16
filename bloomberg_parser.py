@@ -1,132 +1,87 @@
 import asyncio
 import logging
-import os
 import cloudscraper
 from bs4 import BeautifulSoup
 
-# Playwright imports
-from playwright.async_api import async_playwright
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    async_playwright = None
 
-# Налаштування логування (Render бачить print у логах)
 logging.basicConfig(level=logging.INFO)
+
+URL = "https://www.bloomberg.com/"
 
 async def fetch_bloomberg():
     """
-    Адаптивний парсер Bloomberg:
-    1️⃣ Пробує cloudscraper.
-    2️⃣ Якщо сторінка заблокована або пуста — fallback до Playwright.
-    3️⃣ Виводить перші 500 символів HTML у логах для діагностики.
-    4️⃣ Повертає список заголовків.
+    Основна функція парсингу Bloomberg з fallback:
+    1️⃣ спроба через Cloudscraper
+    2️⃣ якщо блок — через Playwright
     """
+    html = None
 
-    url = "https://www.bloomberg.com/"
-    html = ""
-
-    # --- Крок 1: Cloudsraper ---
+    # === 1. Спроба через Cloudscraper ===
     try:
-        scraper = cloudscraper.create_scraper()
-        response = scraper.get(url, timeout=15)
-        response.raise_for_status()
-
-        html = response.text.strip()
-
-        if len(html) < 1000 or "Please enable JavaScript" in html or "Cloudflare" in html:
-            logging.warning("⚠️ HTML виглядає підозріло (Cloudflare/захист). Переходимо на Playwright.")
-            html = ""
-        else:
-            logging.info("✅ Отримано HTML через cloudscraper.")
+        scraper = cloudscraper.create_scraper(delay=10, browser='chrome')
+        response = scraper.get(URL, timeout=15)
+        if response.status_code == 200:
+            html = response.text
+            logging.info("[Cloudscraper] Отримано HTML (%d символів)", len(html))
     except Exception as e:
-        logging.warning(f"❌ Помилка при використанні cloudscraper: {e}")
-        html = ""
+        logging.warning("[Cloudscraper] Помилка: %s", e)
 
-    # --- Крок 2: Playwright fallback ---
-    if not html:
-        logging.info("🔁 Використовуємо Playwright для завантаження сторінки...")
+    # === 2. Fallback через Playwright ===
+    if (not html or "captcha" in html.lower()) and async_playwright:
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/115.0.0.0 Safari/537.36"
-                ))
-                page = await context.new_page()
-                await page.goto(url, wait_until="networkidle", timeout=30000)
+                page = await browser.new_page()
+                await page.goto(URL, timeout=30000)
+                await asyncio.sleep(3)
                 html = await page.content()
                 await browser.close()
-                logging.info("✅ Отримано HTML через Playwright.")
+                logging.info("[Playwright] Отримано HTML (%d символів)", len(html))
         except Exception as e:
-            logging.error(f"❌ Помилка Playwright: {e}")
-            html = ""
+            logging.warning("[Playwright] Помилка: %s", e)
 
-    # --- Крок 3: Діагностика отриманого HTML ---
-    logging.info(f"📄 Перші 500 символів HTML:\n{html[:500]}\n--- END OF PREVIEW ---")
-
-    # --- Крок 4: Парсинг ---
-    if not html:
-        logging.warning("⚠️ HTML порожній — повертаємо [].")
+    # === 3. Діагностика: показати перші 500 символів ===
+    if html:
+        preview = html[:500].replace("\n", " ")
+        logging.info(f"[DIAGNOSTIC] Перші 500 символів HTML:\n{preview}")
+    else:
+        logging.warning("❌ HTML не отримано. Можливо, блокування з боку Bloomberg.")
         return []
 
+    # === 4. Парсинг HTML ===
     soup = BeautifulSoup(html, "html.parser")
-    titles = _extract_candidates_from_soup(soup)
+    headlines = _extract_candidates_from_soup(soup)
 
-    logging.info(f"🔹 Знайдено {len(titles)} заголовків Bloomberg.")
-    return titles[:10] if titles else []
+    logging.info("[Parser] Знайдено %d заголовків", len(headlines))
+    return headlines
 
 
-def _extract_candidates_from_soup(soup: BeautifulSoup) -> list[str]:
-    """Пошук усіх можливих варіантів заголовків."""
+def _extract_candidates_from_soup(soup: BeautifulSoup):
+    """
+    Універсальний парсер заголовків Bloomberg.
+    """
     candidates = set()
 
-    # --- Варіант 1: data-component-type (найчастіший) ---
-    for tag in soup.find_all(attrs={"data-component-type": "Headline"}):
+    # === Основні теги ===
+    for tag in soup.find_all(["a", "h1", "h2", "h3"], limit=200):
         text = tag.get_text(strip=True)
-        if text:
+        if text and len(text.split()) > 2 and not text.startswith("Bloomberg"):
             candidates.add(text)
 
-    # --- Варіант 2: <a> з aria-label або role="heading" ---
-    for a in soup.find_all("a", attrs={"role": "heading"}):
-        text = a.get_text(strip=True)
-        if text:
-            candidates.add(text)
-    for a in soup.find_all("a", attrs={"aria-label": True}):
-        text = a.get_text(strip=True)
-        if text:
+    # === Посилання з data-component-type ===
+    for link in soup.select('a[data-component-type*="Headline"], a[data-type="story"]'):
+        text = link.get_text(strip=True)
+        if text and len(text.split()) > 2:
             candidates.add(text)
 
-    # --- Варіант 3: класові патерни ---
-    class_patterns = ["headline", "story", "title", "article"]
-    for c in class_patterns:
-        for el in soup.find_all(class_=lambda v: v and c in v.lower()):
-            text = el.get_text(strip=True)
-            if text:
-                candidates.add(text)
-
-    # --- Варіант 4: Теги h1, h2 ---
-    for h in soup.find_all(["h1", "h2"]):
-        text = h.get_text(strip=True)
-        if text:
-            candidates.add(text)
-
-    # --- Варіант 5: meta og:title ---
+    # === Meta og:title ===
     for meta in soup.find_all("meta", attrs={"property": "og:title"}):
-        text = meta.get("content")
-        if text:
-            candidates.add(text.strip())
+        content = meta.get("content")
+        if content:
+            candidates.add(content.strip())
 
-    # --- Фільтрація ---
-    filtered = [
-        t for t in candidates
-        if len(t) > 5
-        and not t.lower().startswith("bloomberg")
-        and not "cookies" in t.lower()
-        and not "javascript" in t.lower()
-    ]
-
-    return list(filtered)
-
-
-# --- Тестовий запуск локально ---
-if __name__ == "__main__":
-    results = asyncio.run(fetch_bloomberg())
-    print("✅ Результати:", results)
+    return list(candidates)

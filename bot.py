@@ -2,10 +2,11 @@ import os
 import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.enums import ParseMode # ✅ ДОДАНО: Для ParseMode.HTML
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties # ✅ НОВИЙ ІМПОРТ: Для коректної ініціалізації
 from aiohttp import web 
-import requests # Залишено, хоча не використовується
-from bs4 import BeautifulSoup # Залишено, хоча не використовується
+import requests 
+from bs4 import BeautifulSoup 
 # ---------------------------------------
 
 # НОВИЙ ІМПОРТ: Підключаємо адаптивний парсер
@@ -19,8 +20,12 @@ if not TOKEN:
     # ❌ Жорстко зупиняємо, якщо токен не знайдено, з новою помилкою
     raise ValueError("❌ Environment variable BOT_TOKEN not found! Please set it on Render.")
 
-# ✅ ВИПРАВЛЕНО: Додано parse_mode=ParseMode.HTML
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+# ✅ ВИПРАВЛЕНО: Використовуємо 'default=DefaultBotProperties()' замість 'parse_mode=...'
+# Згідно з вимогами aiogram 3.7+
+bot = Bot(
+    token=TOKEN, 
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
 # ---------------------------------------
 
@@ -57,7 +62,7 @@ async def news_command(message: types.Message):
 
 async def handle_ping(request):
     """Простий обробник для пінг-запитів Render"""
-    return web.Response(text="✅ Bot is alive") # Змінено текст для чіткості
+    return web.Response(text="✅ Bot is alive")
 
 async def start_web_server():
     """Запускає веб-сервер на порту, який очікує Render (PORT)"""

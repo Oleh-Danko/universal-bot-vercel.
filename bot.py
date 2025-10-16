@@ -6,7 +6,8 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-from bloomberg_parser import fetch_bloomberg
+# === НОВИЙ ІМПОРТ: Використовуємо наш RSS-парсер
+from rss_parser import fetch_rss_news
 
 # === CONFIG & INIT ===
 logging.basicConfig(level=logging.INFO)
@@ -33,19 +34,33 @@ async def start_cmd(message: Message):
     )
 
 @dp.message(Command("news"))
-async def news_cmd(message: Message):
-    await message.answer("⏳ Отримую свіжі новини з Bloomberg...")
+async def news_cmd(message: Message, bot: Bot):
+    # Спочатку надсилаємо повідомлення, щоб користувач не чекав
+    await message.answer("⏳ Отримую свіжі новини з BBC (RSS)...")
+    
     try:
-        news_list = await fetch_bloomberg(top_n=5)
-        if not news_list:
-            raise ValueError("Порожній список новин")
+        # RSS-адреса, яку ми будемо парсити (BBC World News)
+        BBC_RSS_URL = "http://feeds.bbci.co.uk/news/world/rss.xml" 
+        
+        # Використовуємо новий RSS-парсер
+        news_list = await fetch_rss_news(BBC_RSS_URL, top_n=5)
 
+        if not news_list:
+            await message.answer("❌ Парсинг не вдався. Новини не знайдено.")
+            return
+
+        # Форматування новин для Markdown
         formatted_news = []
         for n in news_list:
-            formatted_news.append(f"📰 <b>{n['title']}</b>\n<a href='{n['link']}'>Читати на Bloomberg</a>")
+            # Використовуємо Markdown для коректного відображення посилань
+            formatted_news.append(f"📰 *{n['title']}*\n[Читати на BBC]({n['link']})")
 
         text = "\n\n".join(formatted_news)
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+        await message.answer(
+            text, 
+            parse_mode="Markdown", 
+            disable_web_page_preview=True
+        )
 
     except Exception as e:
         logger.exception("Помилка в /news: %s", e)

@@ -43,7 +43,7 @@ async def news_cmd(message: Message, bot: Bot):
         BBC_RSS_URL = "http://feeds.bbci.co.uk/news/world/rss.xml" 
         
         # Використовуємо новий RSS-парсер
-        news_list = await fetch_rss_news(BBC_RSS_URL, top_n=5)
+        news_list = await fetch_rss_news(BBC_RSS_URL)
 
         if not news_list:
             await message.answer("❌ Парсинг не вдався. Новини не знайдено.")

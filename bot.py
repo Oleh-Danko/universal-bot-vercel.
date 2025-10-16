@@ -1,82 +1,70 @@
-# bot.py
 import os
 import logging
 from aiohttp import web
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-
-from bloomberg_parser import fetch_bloomberg  # our parser (expects top_n param)
+from aiogram.types import Message
+from bloomberg_parser import fetch_bloomberg
 
 logging.basicConfig(level=logging.INFO)
-LOG = logging.getLogger("WebhookBot")
+logger = logging.getLogger("WebhookBot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://universal-bot-live.onrender.com")
+
 if not BOT_TOKEN:
     raise RuntimeError("Environment variable BOT_TOKEN is required")
-
-# WEBHOOK_URL should be base URL (e.g. https://universal-bot-live.onrender.com)
-WEBHOOK_BASE = os.getenv("WEBHOOK_URL")
-if not WEBHOOK_BASE:
-    raise RuntimeError("Environment variable WEBHOOK_URL is required (base URL)")
-
-WEBHOOK_BASE = WEBHOOK_BASE.rstrip("/")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ---------- Handlers ----------
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer("👋 Привіт! Я бот, запущений на Render через Webhook. Надішліть /news")
+# ✅ Health Check endpoint for Render
+async def handle_health(request):
+    return web.Response(text="OK")
 
+# ✅ Start command
+@dp.message(Command("start"))
+async def start_cmd(message: Message):
+    await message.answer(
+        "👋 Привіт! Я бот, запущений на Render. Тепер я використовую стабільний Webhook!\n"
+        "Надішліть /news, щоб перевірити парсинг."
+    )
+
+# ✅ News command
 @dp.message(Command("news"))
-async def cmd_news(message: types.Message):
+async def news_cmd(message: Message):
     await message.answer("⏳ Отримую свіжі новини з Bloomberg...")
     try:
-        headlines = await fetch_bloomberg(top_n=10)
-        if not headlines:
-            await message.answer("❌ Парсинг не вдався. Можливо, сайт заблокував запит або сталася помилка.")
-            return
-        formatted = "\n\n".join([f"🔹 {t}" for t in headlines])
-        await message.answer(f"📰 Топ новин Bloomberg:\n\n{formatted}")
+        news_list = await fetch_bloomberg(top_n=5)
+        if not news_list:
+            raise ValueError("Порожній список новин")
+
+        text = "\n\n".join([f"📰 <b>{n['title']}</b>\n{n['link']}" for n in news_list])
+        await message.answer(text, parse_mode="HTML")
+
     except Exception as e:
-        LOG.exception("Помилка в /news")
-        await message.answer(f"❌ Помилка при парсингу: {e}")
+        logger.exception("Помилка в /news: %s", e)
+        await message.answer(f"❌ Парсинг не вдався. Деталі помилки: {e}")
 
-# ---------- Webhook & Health ----------
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
+# ✅ Webhook handler
+async def webhook_handler(request):
+    update = await request.json()
+    await dp.feed_webhook_update(bot, update)
+    return web.Response()
 
-async def on_startup(app: web.Application):
-    # встановлюємо webhook
-    await bot.set_webhook(WEBHOOK_URL)
-    LOG.info("Setting webhook to %s", WEBHOOK_URL)
+# ✅ Launch web server (Render)
+async def main():
+    app = web.Application()
+    app.router.add_get("/", handle_health)
+    app.router.add_post(f"/webhook/{BOT_TOKEN}", webhook_handler)
 
-async def on_shutdown(app: web.Application):
-    try:
-        await bot.delete_webhook()
-        LOG.info("Webhook deleted")
-    except Exception:
-        LOG.exception("Error deleting webhook")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
+    logger.info("✅ Webhook successfully set.")
 
-async def health(request):
-    return web.Response(text="OK", status=200)
-
-# Create app
-app = web.Application()
-# health endpoints for Render
-app.router.add_get("/", health)
-app.router.add_get("/health", health)
-
-# register webhook handler at path
-SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
-setup_application(app, dp, bot=bot)
-
-app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    LOG.info("🌐 Starting web server on 0.0.0.0:%d", port)
-    web.run_app(app, host="0.0.0.0", port=port)
+    logger.info("🌐 Starting web server on 0.0.0.0:10000...")
+    import asyncio
+    asyncio.run(main())

@@ -1,95 +1,118 @@
 import os
 import asyncio
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties # ✅ НОВИЙ ІМПОРТ: Для коректної ініціалізації
+from aiogram.client.default import DefaultBotProperties
 from aiohttp import web 
-import requests 
-from bs4 import BeautifulSoup 
-# ---------------------------------------
+import logging
 
-# НОВИЙ ІМПОРТ: Підключаємо адаптивний парсер
+# Підключаємо адаптивний парсер
 from bloomberg_parser import fetch_bloomberg 
 
-# --- Ініціалізація бота (ВИПРАВЛЕНО) ---
-# 🔑 Тепер беремо змінну BOT_TOKEN
-TOKEN = os.environ.get("BOT_TOKEN") 
+# Налаштування логування
+logging.basicConfig(level=logging.INFO)
+LOG = logging.getLogger("WebhookBot")
 
+# --- Конфігурація ---
+TOKEN = os.environ.get("BOT_TOKEN") 
 if not TOKEN:
-    # ❌ Жорстко зупиняємо, якщо токен не знайдено, з новою помилкою
     raise ValueError("❌ Environment variable BOT_TOKEN not found! Please set it on Render.")
 
-# ✅ ВИПРАВЛЕНО: Використовуємо 'default=DefaultBotProperties()' замість 'parse_mode=...'
-# Згідно з вимогами aiogram 3.7+
+# URL вашого сервісу на Render (КРИТИЧНО ВАЖЛИВО!)
+# !!! ПЕРЕВІРТЕ ЦЕЙ URL: https://universal-bot-live.onrender.com !!!
+WEBHOOK_HOST = 'https://universal-bot-live.onrender.com'
+WEBHOOK_PATH = f'/webhook/{TOKEN}'
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
+# Ініціалізація
 bot = Bot(
     token=TOKEN, 
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp = Dispatcher()
-# ---------------------------------------
-
 
 # --- Обробники команд ---
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     await message.answer(
-        "👋 Привіт! Я бот, запущений на Render. Я не сплю, бо маю веб-сервер!\n"
-        "Надішліть /news, щоб перевірити, чи працює основна логіка (з парсингом)."
+        "👋 Привіт! Я бот, запущений на Render. Тепер я використовую стабільний Webhook!\n"
+        "Надішліть /news, щоб перевірити парсинг."
     )
 
 @dp.message(Command("news"))
 async def news_command(message: types.Message):
     await message.answer("⏳ Отримую свіжі новини з Bloomberg...")
     try:
-        # Припускаємо, що fetch_bloomberg повертає список заголовків, або порожній список/None
-        titles = await fetch_bloomberg() 
+        # fetch_bloomberg тепер повертає список dict: [{"title": "...", "url": "..."}]
+        headlines = await fetch_bloomberg(top_n=10) 
         
-        # Перевіряємо, чи повернулися новини
-        if titles and isinstance(titles, list):
-            formatted = "\n\n".join([f"🔹 {t}" for t in titles])
-            await message.answer(f"📰 Топ новин Bloomberg:\n\n{formatted}")
+        if headlines:
+            formatted = "\n\n".join([f"🔹 <a href='{h['url']}'>{h['title']}</a>" for h in headlines if h.get('url')])
+            # Якщо заголовки є, але немає URL (що малоймовірно з новим парсером)
+            if not formatted:
+                formatted = "\n\n".join([f"🔹 {h['title']}" for h in headlines])
+            
+            await message.answer(f"📰 Топ новин Bloomberg:\n\n{formatted}", disable_web_page_preview=True)
         else:
-            await message.answer("⚠️ Не вдалося отримати новини. Можливо, Bloomberg заблокував IP.")
+            await message.answer("⚠️ Не вдалося отримати новини. Можливо, сайт заблокував запит або сталася помилка.")
             
     except Exception as e:
-        # Це повідомлення для користувача. Деталі помилки підуть адміну
-        await message.answer("❌ Парсинг не вдався. Адміністратора повідомлено про проблему.")
-        # Тут має бути виклик функції send_admin_alert(f"Помилка в /news: {e}"), якщо вона є у коді
+        LOG.error(f"Помилка в /news: {e}")
+        # Тут можна було б надіслати помилку адміну, але поки виводимо користувачу
+        await message.answer(f"❌ Парсинг не вдався. Деталі помилки: {e}")
 
-# --- Web Server для Render (щоб не засинав) ---
+# --- Webhook Handler та Запуск Сервера ---
 
-async def handle_ping(request):
-    """Простий обробник для пінг-запитів Render"""
-    return web.Response(text="✅ Bot is alive")
-
-async def start_web_server():
-    """Запускає веб-сервер на порту, який очікує Render (PORT)"""
-    # Render передає порт через змінну оточення PORT
-    port = int(os.environ.get("PORT", 8080)) 
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    # Створюємо сайт
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Keepalive running on port {port}")
+async def telegram_webhook_handler(request: web.Request):
+    """Обробник, який приймає POST-запити від Telegram."""
+    try:
+        # 1. Отримуємо оновлення у форматі JSON
+        data = await request.json()
+        # 2. Перетворюємо JSON на об'єкт Update
+        update = types.Update(**data)
+        # 3. Передаємо оновлення в диспетчер aiogram для обробки
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        LOG.error(f"Error handling webhook: {e}")
     
-    # Запобігаємо завершенню асинхронної функції
-    while True:
-        await asyncio.sleep(3600) # Чекаємо 1 годину
+    # Telegram очікує 200 OK
+    return web.Response()
 
-# --- Головна функція запуску ---
+async def on_startup(app: web.Application):
+    """Дія при запуску: встановлюємо Webhook у Telegram."""
+    LOG.info(f"Setting webhook to {WEBHOOK_URL}")
+    await bot.set_webhook(WEBHOOK_URL)
+    LOG.info("✅ Webhook successfully set.")
 
-async def main():
-    print("✅ Бот запущений і чекає повідомлень...")
-    await asyncio.gather(
-        dp.start_polling(bot),
-        start_web_server() # Запуск фонового веб-сервера
-    )
+async def on_shutdown(app: web.Application):
+    """Дія при зупинці: видаляємо Webhook."""
+    LOG.info("Deleting webhook...")
+    await bot.delete_webhook()
+    LOG.info("✅ Webhook successfully deleted.")
+
+
+def main():
+    """Основна функція запуску Webhook сервера."""
+    
+    # 1. Створюємо додаток aiohttp
+    app = web.Application()
+    
+    # 2. Додаємо POST-обробник для шляху /webhook/{TOKEN}
+    app.router.add_post(WEBHOOK_PATH, telegram_webhook_handler)
+    
+    # 3. Реєструємо функції запуску/зупинки
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    
+    # 4. Визначаємо порт (обов'язково беремо PORT зі змінних середовища Render)
+    port = int(os.environ.get("PORT", 8080))
+    
+    LOG.info(f"🌐 Starting web server on 0.0.0.0:{port}...")
+    
+    # 5. Запускаємо aiohttp веб-сервер
+    web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    # Запускаємо головну функцію
-    asyncio.run(main())
+    main()

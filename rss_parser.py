@@ -3,7 +3,8 @@ import logging
 
 logger = logging.getLogger("RSSParser")
 
-async def fetch_rss_news(rss_url: str, top_n: int = 5) -> list:
+# === ВИДАЛЯЄМО top_n з визначення функції ===
+async def fetch_rss_news(rss_url: str) -> list:
     """Парсить RSS-канал і повертає список новин."""
     news_list = []
 
@@ -11,9 +12,13 @@ async def fetch_rss_news(rss_url: str, top_n: int = 5) -> list:
 
     # feedparser робить простий HTTP-запит, який є швидким
     feed = feedparser.parse(rss_url)
+    
+    # Додаткове логування для діагностики (залишимо, щоб бачити кількість)
+    logger.info(f"Total entries found in RSS feed: {len(feed.entries)}")
 
     if feed.entries:
-        for entry in feed.entries[:top_n]:
+        # === ПРИБИРАЄМО ОБРІЗАННЯ [:top_n] ===
+        for entry in feed.entries:
             title = entry.get('title')
             link = entry.get('link')
 

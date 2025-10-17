@@ -13,20 +13,25 @@ async def fetch_rss_news(rss_url: str) -> list:
     # feedparser робить простий HTTP-запит, який є швидким
     feed = feedparser.parse(rss_url)
     
-    # Додаткове логування для діагностики (залишимо, щоб бачити кількість)
+    # Додаткове логування для діагностики
     logger.info(f"Total entries found in RSS feed: {len(feed.entries)}")
 
     if feed.entries:
-        # === ПРИБИРАЄМО ОБРІЗАННЯ [:top_n] ===
+        # === ВИПРАВЛЕННЯ: Видаляємо умову 'if title and link:' ===
+        # Це гарантує, що ми включаємо ВСІ 50 елементів, навіть якщо
+        # feedparser не може знайти title або link (використовуємо заглушки)
         for entry in feed.entries:
-            title = entry.get('title')
-            link = entry.get('link')
+            # Отримуємо заголовок або 'Заголовок відсутній'
+            title = entry.get('title', 'Заголовок відсутній')
+            # Отримуємо посилання або '#'
+            link = entry.get('link', '#')
 
-            if title and link:
-                news_list.append({
-                    "title": title,
-                    "link": link
-                })
+            # Додаємо елемент БЕЗ ЖОДНИХ УМОВ
+            news_list.append({
+                "title": title,
+                "link": link
+            })
+            
         logger.info(f"Successfully parsed {len(news_list)} items from RSS.")
     else:
         logger.warning(f"Could not find any entries in RSS feed: {rss_url}")

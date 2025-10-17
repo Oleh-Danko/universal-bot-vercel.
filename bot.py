@@ -6,12 +6,13 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-# === НОВИЙ ІМПОРТ: Потрібен для екранування символів у заголовках
+# === НОВІ ІМПОРТИ (КРИТИЧНО) ===
 import html 
+import asyncio # Потрібен для asyncio.to_thread, щоб зробити парсер неблокуючим
 
 # === ІМПОРТИ ДЛЯ ФУНКЦІОНАЛУ ===
-from rss_parser import fetch_rss_news
-from bloomberg_parser import fetch_bloomberg_news # <--- НОВИЙ ІМПОРТ
+from rss_parser import fetch_rss_news 
+from bloomberg_parser import fetch_bloomberg_news 
 
 # === CONFIG & INIT ===
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +23,7 @@ if not BOT_TOKEN:
     raise RuntimeError("Environment variable BOT_TOKEN is required")
 
 # Використовуємо WEBHOOK_URL зі змінних оточення (Render)
-WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "https://universal-bot-live.onrender.com")
+WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "[https://universal-bot-live.onrender.com](https://universal-bot-live.onrender.com)")
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
@@ -44,7 +45,7 @@ async def news_cmd(message: Message, bot: Bot):
     
     try:
         # RSS-адреса, яку ми будемо парсити (BBC World News)
-        BBC_RSS_URL = "http://feeds.bbci.co.uk/news/world/rss.xml" 
+        BBC_RSS_URL = "[http://feeds.bbci.co.uk/news/world/rss.xml](http://feeds.bbci.co.uk/news/world/rss.xml)" 
         
         # Використовуємо новий RSS-парсер
         news_list = await fetch_rss_news(BBC_RSS_URL)
@@ -71,9 +72,9 @@ async def news_cmd(message: Message, bot: Bot):
         await message.answer(f"❌ Парсинг не вдався. Деталі помилки: {e}")
 
 
-# === НОВИЙ ХЕНДЛЕР: /bloomberg (ІНТЕГРОВАНО) ===
+# === ВИПРАВЛЕНИЙ ХЕНДЛЕР: /bloomberg (НЕБЛОКУЮЧИЙ) ===
 @dp.message(Command("bloomberg"))
-async def bloomberg_cmd(message: Message, bot: Bot):
+async def bloomberg_cmd(message: Message):
     """Обробляє команду /bloomberg, отримуючи ТОП-10 новин з Bloomberg (парсинг)."""
     
     # 1. Повідомлення про початок
@@ -81,9 +82,9 @@ async def bloomberg_cmd(message: Message, bot: Bot):
                          parse_mode="HTML") 
 
     try:
-        # 2. Виклик синхронного парсера в асинхронному циклі
-        # Використовуємо bot.loop.run_in_executor для ізоляції блокуючого коду (requests/bs4)
-        news_items = await bot.loop.run_in_executor(None, fetch_bloomberg_news)
+        # 2. КРИТИЧНО: Виклик синхронного парсера в окремому потоці, щоб не блокувати aiogram
+        # Використовуємо asyncio.to_thread для безпечного виконання blocking-коду
+        news_items = await asyncio.to_thread(fetch_bloomberg_news)
         
         if not news_items:
             await message.answer("❌ Не вдалося отримати новини з Bloomberg. Можливо, сайт заблокував запит або змінив структуру.")
@@ -92,7 +93,7 @@ async def bloomberg_cmd(message: Message, bot: Bot):
         # 3. Форматування та відправка новин
         response_messages = []
         for i, item in enumerate(news_items):
-            # Екранування HTML-символів у заголовку для безпечного використання в Markdown
+            # КРИТИЧНО: Екранування символів у заголовку
             title = html.escape(item.get('title', ''))
             
             # Форматуємо новину: номер, заголовок, посилання (Markdown-формат)

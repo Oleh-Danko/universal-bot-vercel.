@@ -1,6 +1,7 @@
-aiohttp
-beautifulsoup4
-requests
+# Основні залежності бота
+aiogram==3.13.1
+aiohttp==3.9.5
 
-# Якщо використовуєте Playwright fallback:
-# playwright
+# Залежності для парсингу (КРИТИЧНО НЕОБХІДНІ)
+requests>=2.28.0
+beautifulsoup4>=4.12.2

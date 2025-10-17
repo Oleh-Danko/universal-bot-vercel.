@@ -6,8 +6,12 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-# === НОВИЙ ІМПОРТ: Використовуємо наш RSS-парсер
+# === НОВИЙ ІМПОРТ: Потрібен для екранування символів у заголовках
+import html 
+
+# === ІМПОРТИ ДЛЯ ФУНКЦІОНАЛУ ===
 from rss_parser import fetch_rss_news
+from bloomberg_parser import fetch_bloomberg_news # <--- НОВИЙ ІМПОРТ
 
 # === CONFIG & INIT ===
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +34,7 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
-        "👋 Привіт! Я бот, запущений на Render. Надішліть /news, щоб перевірити парсинг."
+        "👋 Привіт! Я бот, запущений на Render. Надішліть /news або /bloomberg, щоб перевірити парсинг."
     )
 
 @dp.message(Command("news"))
@@ -67,6 +71,48 @@ async def news_cmd(message: Message, bot: Bot):
         await message.answer(f"❌ Парсинг не вдався. Деталі помилки: {e}")
 
 
+# === НОВИЙ ХЕНДЛЕР: /bloomberg (ІНТЕГРОВАНО) ===
+@dp.message(Command("bloomberg"))
+async def bloomberg_cmd(message: Message, bot: Bot):
+    """Обробляє команду /bloomberg, отримуючи ТОП-10 новин з Bloomberg (парсинг)."""
+    
+    # 1. Повідомлення про початок
+    await message.answer("🔍 Завантажую ТОП-10 новин з Bloomberg...", 
+                         parse_mode="HTML") 
+
+    try:
+        # 2. Виклик синхронного парсера в асинхронному циклі
+        # Використовуємо bot.loop.run_in_executor для ізоляції блокуючого коду (requests/bs4)
+        news_items = await bot.loop.run_in_executor(None, fetch_bloomberg_news)
+        
+        if not news_items:
+            await message.answer("❌ Не вдалося отримати новини з Bloomberg. Можливо, сайт заблокував запит або змінив структуру.")
+            return
+
+        # 3. Форматування та відправка новин
+        response_messages = []
+        for i, item in enumerate(news_items):
+            # Екранування HTML-символів у заголовку для безпечного використання в Markdown
+            title = html.escape(item.get('title', ''))
+            
+            # Форматуємо новину: номер, заголовок, посилання (Markdown-формат)
+            news_text = f"**{i + 1}.** *{title}*\n[Читати повністю]({item['link']})"
+            response_messages.append(news_text)
+        
+        text_to_send = "\n\n".join(response_messages)
+        
+        # 4. Відправляємо повідомлення
+        await message.answer(
+            f"🗞️ **ТОП {len(news_items)} новин з Bloomberg**:\n\n{text_to_send}",
+            parse_mode="Markdown", 
+            disable_web_page_preview=True 
+        )
+
+    except Exception as e:
+        logger.exception("Помилка в bloomberg_cmd: %s", e)
+        await message.answer("❌ Виникла помилка під час обробки новин Bloomberg. Спробуйте пізніше.")
+
+
 # === STARTUP / SHUTDOWN (Async Operations) ===
 async def on_startup(app):
     # Встановлюємо webhook
@@ -101,7 +147,6 @@ def main():
     app.on_shutdown.append(on_shutdown)
 
     logger.info("🌐 Starting web server on 0.0.0.0:10000 ...")
-    # web.run_app() сам запускає цикл подій, тут немає asyncio.run()
     web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
 
 if __name__ == "__main__":

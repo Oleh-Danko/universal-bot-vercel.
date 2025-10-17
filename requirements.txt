@@ -1,7 +1,4 @@
-aiogram==3.13.1
 aiohttp
 beautifulsoup4
-cloudscraper
-playwright
-playwright-stealth
-feedparser
+# Якщо використовуєте Playwright fallback:
+# playwright

@@ -1,36 +1,42 @@
+import requests
 import feedparser
 import logging
 
+# Обмеження кількості новин для уникнення надто довгих повідомлень у Telegram
+MAX_NEWS_ITEMS = 25 
 logger = logging.getLogger("RSSParser")
 
-async def fetch_rss_news(rss_url: str) -> list:
-    """Парсить RSS-канал і повертає список новин, обробляючи до 50 елементів."""
-    news_list = []
-
-    logger.info(f"Fetching RSS from: {rss_url}")
-
-    feed = feedparser.parse(rss_url)
-    
-    # BBC RSS-стрічки часто містять до 50 елементів
-    total_entries = len(feed.entries)
-    logger.info(f"Total entries found in RSS feed: {total_entries}")
-
-    if total_entries:
-        # Ітеруємо по всіх знайдених елементах
-        for entry in feed.entries:
-            # Використовуємо .get() для безпечного доступу, надаючи заглушки
-            title = entry.get('title', 'Заголовок відсутній')
-            link = entry.get('link', '#')
-
-            # Додаємо елемент, лише якщо є хоча б один ключовий компонент (заголовок або посилання)
-            if title != 'Заголовок відсутній' or link != '#':
-                news_list.append({
-                    "title": title,
-                    "link": link
-                })
+def fetch_rss_news(url: str) -> list[dict]:
+    """
+    Отримує та парсить RSS-стрічку за заданим URL, обмежуючи кількість новин.
+    """
+    try:
+        # Отримання даних RSS
+        response = requests.get(url, timeout=10)
+        response.raise_for_status() # Перевіряємо на помилки HTTP
         
-        logger.info(f"Successfully parsed {len(news_list)} items from RSS.")
-    else:
-        logger.warning(f"Could not find any entries in RSS feed: {rss_url}")
+        # Парсинг стрічки
+        feed = feedparser.parse(response.content)
+        
+        news_list = []
+        # Обробляємо лише перші MAX_NEWS_ITEMS
+        for entry in feed.entries[:MAX_NEWS_ITEMS]:
+            # Додаємо лише, якщо є необхідні поля
+            title = getattr(entry, 'title', None)
+            link = getattr(entry, 'link', None)
 
-    return news_list
+            if title and link:
+                news_list.append({
+                    'title': title,
+                    'link': link,
+                })
+
+        logger.info(f"Successfully fetched {len(news_list)} items from RSS.")
+        return news_list
+
+    except requests.exceptions.RequestException as req_err:
+        logger.error(f"Request error for RSS: {req_err}")
+    except Exception as e:
+        logger.error(f"General error during RSS parsing: {e}")
+    
+    return []

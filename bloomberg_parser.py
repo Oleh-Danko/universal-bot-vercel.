@@ -1,101 +1,56 @@
-# bloomberg_parser.py
-import logging
-from typing import List, Dict
-from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
+import logging
 
-LOG = logging.getLogger("bloomberg_parser")
-LOG.setLevel(logging.INFO)
+logger = logging.getLogger("BloombergParser")
 
-BLOOMBERG_BASE = "[https://www.bloomberg.com](https://www.bloomberg.com)"
-BLOOMBERG_URL = "[https://www.bloomberg.com/](https://www.bloomberg.com/)"
-
+# Налаштування заголовків для імітації браузера
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "[https://www.google.com/](https://www.google.com/)",
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 
-def _norm_link(href: str) -> str:
-    if not href:
-        return ""
-    href = href.strip()
-    if href.startswith("//"):
-        return "https:" + href
-    if href.startswith("/"):
-        return urljoin(BLOOMBERG_BASE, href)
-    return href
-
-def fetch_bloomberg_news() -> List[Dict[str, str]]:
+def fetch_bloomberg_news() -> list[dict]:
     """
-    Синхронний blocking парсер — повертає list[{"title","link"}, ...] (макс 10)
-    Використовуй його з asyncio.to_thread або loop.run_in_executor у боті.
+    Парсить головну сторінку Bloomberg для отримання останніх новин.
+    Використовує requests та BeautifulSoup.
     """
+    url = "https://www.bloomberg.com"
+    
     try:
-        # 1. Запит до сайту
-        resp = requests.get(BLOOMBERG_URL, headers=HEADERS, timeout=12)
-        resp.raise_for_status()
+        # Виконання HTTP-запиту
+        response = requests.get(url, headers=HEADERS, timeout=15)
+        response.raise_for_status() # Викликає помилку для поганих відповідей (4xx або 5xx)
+
+        # Парсинг HTML-вмісту
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Знаходимо всі посилання, які містять заголовок
+        # Bloomberg часто використовує тег <a> з класом 'headline' або 'story-card'
+        # Шукаємо елементи, які, ймовірно, є посиланнями на статті
+        articles = soup.select('a.headline, a[data-component="StoryCardHeadline"]')
+        
+        news_items = []
+        for article in articles:
+            title_text = article.text.strip()
+            link_url = article.get('href')
+
+            # Перевірка на валідність даних
+            if title_text and link_url:
+                # Bloomberg може повертати відносні URL. Робимо їх абсолютними.
+                if not link_url.startswith('http'):
+                    link_url = f"{url}{link_url}"
+                
+                news_items.append({
+                    'title': title_text,
+                    'link': link_url
+                })
+                
+        logger.info(f"Successfully scraped {len(news_items)} items from Bloomberg.")
+        return news_items
+
+    except requests.exceptions.RequestException as req_err:
+        logger.error(f"Request error for Bloomberg: {req_err}")
     except Exception as e:
-        LOG.exception("HTTP error fetching Bloomberg: %s", e)
-        return []
-
-    html_content = resp.text
-    soup = BeautifulSoup(html_content, "html.parser")
-
-    candidates = []
-    seen = set()
-
-    # 2. Евристики для пошуку новин (фокусуємося на заголовках та посиланнях)
-    for article in soup.find_all("article"):
-        for tag_name in ("h1", "h2", "h3"):
-            t = article.find(tag_name)
-            if t:
-                title = t.get_text(strip=True)
-                a = article.find("a", href=True)
-                link = a["href"] if a else ""
-                link = _norm_link(link)
-                if title and title.lower() not in seen:
-                    seen.add(title.lower())
-                    candidates.append({"title": title, "link": link})
-                if len(candidates) >= 10:
-                    return candidates[:10]
-
-    # 3. Додатковий пошук по посиланнях, що містять ключові слова
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        text = a.get_text(strip=True)
-        if not text or len(text) < 6:
-            continue
-        lowhref = href.lower()
-        if any(x in lowhref for x in ("/news/", "/markets", "/articles/")):
-            link = _norm_link(href)
-            key = text.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append({"title": text, "link": link})
-            if len(candidates) >= 10:
-                return candidates[:10]
-
-    # 4. Фінальна дедуплікація та повернення до 10 елементів
-    out = []
-    added = set()
-    for c in candidates:
-        t = c.get("title", "").strip()
-        l = c.get("link", "").strip()
-        if not t:
-            continue
-        key = t.lower()
-        if key in added:
-            continue
-        added.add(key)
-        out.append({"title": t, "link": l})
-        if len(out) >= 10:
-            break
-
-    return out
+        logger.error(f"General error during Bloomberg scraping: {e}")
+    
+    return []

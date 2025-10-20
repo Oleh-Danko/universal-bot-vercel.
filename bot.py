@@ -22,13 +22,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Environment variable BOT_TOKEN is required")
 
-# КРИТИЧНЕ ВИПРАВЛЕННЯ: Видаляємо зламаний Markdown-формат з URL за замовчуванням.
-# Використовуємо чистий URL як fallback.
+# КРИТИЧНЕ ВИПРАВЛЕННЯ: Чистий URL без markdown-формату
 WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "https://universal-bot-live.onrender.com")
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 
+# Створюємо екземпляри бота та диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -36,7 +36,7 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
-        "👋 Привіт! Я бот, запущений на Render. Надішліть /news або /bloomberg, щоб перевірити парсинг."
+        "👋 Привіт! Я бот, запущений на Render. Надішліть /news (BBC RSS) або /bloomberg (Парсинг), щоб перевірити функціонал."
     )
 
 @dp.message(Command("news"))
@@ -48,7 +48,8 @@ async def news_cmd(message: Message, bot: Bot):
         # RSS-адреса, яку ми будемо парсити (BBC World News)
         BBC_RSS_URL = "http://feeds.bbci.co.uk/news/world/rss.xml" 
         
-        # Використовуємо новий RSS-парсер
+        # === КРИТИЧНЕ ВИПРАВЛЕННЯ: ДОДАНО 'await' ===
+        # Використовуємо asyncio.to_thread, щоб синхронна функція не блокувала aiohttp.
         news_list = await asyncio.to_thread(fetch_rss_news, BBC_RSS_URL)
 
         if not news_list:
@@ -70,10 +71,10 @@ async def news_cmd(message: Message, bot: Bot):
 
     except Exception as e:
         logger.exception("Помилка в /news: %s", e)
+        # Надсилаємо повідомлення про помилку з її деталями
         await message.answer(f"❌ Парсинг не вдався. Деталі помилки: {e}")
 
 
-# === ВИПРАВЛЕНИЙ ХЕНДЛЕР: /bloomberg (НЕБЛОКУЮЧИЙ) ===
 @dp.message(Command("bloomberg"))
 async def bloomberg_cmd(message: Message):
     """Обробляє команду /bloomberg, отримуючи ТОП-10 новин з Bloomberg (парсинг)."""
@@ -83,8 +84,7 @@ async def bloomberg_cmd(message: Message):
                          parse_mode="HTML") 
 
     try:
-        # 2. КРИТИЧНО: Виклик синхронного парсера в окремому потоці, щоб не блокувати aiogram
-        # Використовуємо asyncio.to_thread для безпечного виконання blocking-коду
+        # 2. КРИТИЧНО: ДОДАНО 'await' для безпечного виконання blocking-коду
         news_items = await asyncio.to_thread(fetch_bloomberg_news)
         
         if not news_items:
@@ -93,8 +93,8 @@ async def bloomberg_cmd(message: Message):
 
         # 3. Форматування та відправка новин
         response_messages = []
-        for i, item in enumerate(news_items):
-            # КРИТИЧНО: Екранування символів у заголовку
+        for i, item in enumerate(news_items[:10]): # Обмежуємо 10
+            # Екранування символів у заголовку
             title = html.escape(item.get('title', ''))
             
             # Форматуємо новину: номер, заголовок, посилання (Markdown-формат)
@@ -105,14 +105,14 @@ async def bloomberg_cmd(message: Message):
         
         # 4. Відправляємо повідомлення
         await message.answer(
-            f"🗞️ **ТОП {len(news_items)} новин з Bloomberg**:\n\n{text_to_send}",
+            f"🗞️ **ТОП {len(news_items[:10])} новин з Bloomberg**:\n\n{text_to_send}",
             parse_mode="Markdown", 
             disable_web_page_preview=True 
         )
 
     except Exception as e:
         logger.exception("Помилка в bloomberg_cmd: %s", e)
-        await message.answer("❌ Виникла помилка під час обробки новин Bloomberg. Спробуйте пізніше.")
+        await message.answer(f"❌ Виникла помилка під час обробки новин Bloomberg. Деталі: {e}")
 
 
 # === STARTUP / SHUTDOWN (Async Operations) ===
@@ -149,6 +149,7 @@ def main():
     app.on_shutdown.append(on_shutdown)
 
     logger.info("🌐 Starting web server on 0.0.0.0:10000 ...")
+    # web.run_app блокує виконання і запускає цикл aiohttp
     web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
 
 if __name__ == "__main__":

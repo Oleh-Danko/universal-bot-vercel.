@@ -9,7 +9,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 import html 
 import asyncio 
 
-# >>> НОВИЙ ІМПОРТ: Менеджер кешу (видалення старих парсерів відбулося) <<<
+# >>> НОВИЙ ІМПОРТ: Менеджер кешу <<<
 from cache_manager import CacheManager 
 
 # === CONFIG & INIT ===
@@ -32,7 +32,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # >>> НОВА ІНІЦІАЛІЗАЦІЯ: МЕНЕДЖЕР КЕШУ <<<
-# Цей об'єкт буде використовуватись для читання news_cache.json
 cache_manager = CacheManager()
 
 
@@ -118,4 +117,54 @@ async def news_cmd(message: Message):
 
         # Додаємо останній, незавершений блок
         if current_message_parts and (len(current_message_parts) > 1 or current_message_parts[0] != initial_prefix):
-             messages_to_send.append("\n\n".join(current_message_parts
+             messages_to_send.append("\n\n".join(current_message_parts)) 
+
+        # 4. Відправка повідомлень
+        if messages_to_send:
+            for msg_content in messages_to_send:
+                if msg_content.strip():
+                    await message.answer(
+                        msg_content, 
+                        parse_mode="Markdown", 
+                        disable_web_page_preview=True
+                    )
+        else:
+            await message.answer("❌ Новини було отримано, але стався внутрішній збій при їх формуванні.")
+
+    except Exception as e:
+        logger.exception("Помилка в /news: %s", e)
+        await message.answer(f"❌ Помилка при читанні кешу: {e}")
+
+# === STARTUP / SHUTDOWN (Async Operations) ===
+async def on_startup(app):
+    logger.info(f"Setting webhook to {WEBHOOK_URL}")
+    await bot.set_webhook(WEBHOOK_URL)
+    logger.info("✅ Webhook successfully set.")
+
+async def on_shutdown(app):
+    logger.info("Deleting webhook...")
+    await bot.delete_webhook()
+    await bot.session.close()
+    logger.info("✅ Shutdown complete.")
+
+# === HEALTH CHECK ===
+async def handle_health(request):
+    return web.Response(text="✅ OK", status=200)
+
+# === MAIN (Synchronous Server Run) ===
+def main():
+    app = web.Application()
+
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+
+    app.router.add_get("/", handle_health)
+
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    port = int(os.getenv("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+    main()

@@ -2,13 +2,14 @@ import requests
 import feedparser
 import logging
 
-# Обмеження кількості новин для уникнення надто довгих повідомлень у Telegram
-MAX_NEWS_ITEMS = 25 
+# Кількість новин не обмежена (None), але для безпеки встановлено високий ліміт.
+MAX_NEWS_ITEMS = 50 
 logger = logging.getLogger("RSSParser")
 
 def fetch_rss_news(url: str) -> list[dict]:
     """
-    Отримує та парсить RSS-стрічку за заданим URL, обмежуючи кількість новин.
+    Отримує та парсить RSS-стрічку за заданим URL.
+    ЛІМІТ ВІДСУТНІЙ, повертає усі доступні новини (до MAX_NEWS_ITEMS).
     """
     try:
         # Отримання даних RSS
@@ -19,8 +20,12 @@ def fetch_rss_news(url: str) -> list[dict]:
         feed = feedparser.parse(response.content)
         
         news_list = []
-        # Обробляємо лише перші MAX_NEWS_ITEMS
-        for entry in feed.entries[:MAX_NEWS_ITEMS]:
+        # Обробляємо всі наявні записи або до MAX_NEWS_ITEMS
+        entries_to_process = feed.entries
+        if MAX_NEWS_ITEMS is not None:
+             entries_to_process = feed.entries[:MAX_NEWS_ITEMS]
+
+        for entry in entries_to_process:
             # Додаємо лише, якщо є необхідні поля
             title = getattr(entry, 'title', None)
             link = getattr(entry, 'link', None)

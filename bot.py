@@ -36,19 +36,18 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
-        "👋 Привіт! Я бот, запущений на Render. Надішліть /news (BBC RSS) або /bloomberg (Парсинг), щоб перевірити функціонал."
+        "👋 Привіт! Я бот, запущений на Render. Надішліть /news (BBC Business RSS) або /bloomberg (Парсинг), щоб перевірити функціонал."
     )
 
 @dp.message(Command("news"))
 async def news_cmd(message: Message, bot: Bot):
     # Спочатку надсилаємо повідомлення, щоб користувач не чекав
-    await message.answer("⏳ Отримую свіжі новини з BBC (RSS)...")
+    await message.answer("⏳ Отримую свіжі новини з BBC Business (RSS)...")
     
     try:
-        # RSS-адреса, яку ми будемо парсити (BBC World News)
-        BBC_RSS_URL = "http://feeds.bbci.co.uk/news/world/rss.xml" 
+        # === КРИТИЧНЕ ВИПРАВЛЕННЯ: ЗМІНА RSS-АДРЕСИ НА BBC BUSINESS ===
+        BBC_RSS_URL = "http://feeds.bbci.co.uk/news/business/rss.xml" 
         
-        # === КРИТИЧНЕ ВИПРАВЛЕННЯ: ДОДАНО 'await' ===
         # Використовуємо asyncio.to_thread, щоб синхронна функція не блокувала aiohttp.
         news_list = await asyncio.to_thread(fetch_rss_news, BBC_RSS_URL)
 
@@ -150,9 +149,7 @@ def main():
 
     logger.info("🌐 Starting web server on 0.0.0.0:10000 ...")
     
-    # === КРИТИЧНА ЗМІНА ТУТ ===
-    # Примусово вказуємо Render, що він повинен використовувати $PORT, 
-    # а не фіксований 10000, щоб уникнути конфліктів aiohttp.
+    # Використовуємо змінну оточення $PORT, якщо вона доступна
     port = int(os.getenv("PORT", 10000))
     web.run_app(app, host="0.0.0.0", port=port)
 

@@ -22,8 +22,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Environment variable BOT_TOKEN is required")
 
-# Використовуємо WEBHOOK_URL зі змінних оточення (Render)
-WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "[https://universal-bot-live.onrender.com](https://universal-bot-live.onrender.com)")
+# КРИТИЧНЕ ВИПРАВЛЕННЯ: Видаляємо зламаний Markdown-формат з URL за замовчуванням.
+# Використовуємо чистий URL як fallback.
+WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "https://universal-bot-live.onrender.com")
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
@@ -45,10 +46,10 @@ async def news_cmd(message: Message, bot: Bot):
     
     try:
         # RSS-адреса, яку ми будемо парсити (BBC World News)
-        BBC_RSS_URL = "[http://feeds.bbci.co.uk/news/world/rss.xml](http://feeds.bbci.co.uk/news/world/rss.xml)" 
+        BBC_RSS_URL = "http://feeds.bbci.co.uk/news/world/rss.xml" 
         
         # Використовуємо новий RSS-парсер
-        news_list = await fetch_rss_news(BBC_RSS_URL)
+        news_list = await asyncio.to_thread(fetch_rss_news, BBC_RSS_URL)
 
         if not news_list:
             await message.answer("❌ Парсинг не вдався. Новини не знайдено.")

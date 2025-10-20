@@ -1,8 +1,3 @@
-# ==========================================================
-# Файл: bot.py (Заміна)
-# Призначення: Видалення команди /bloomberg та додавання 9 нових RSS-стрічок.
-# ==========================================================
-
 import os
 import logging
 from aiohttp import web
@@ -12,7 +7,7 @@ from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import html 
-import asyncio # Потрібен для asyncio.to_thread, щоб зробити парсер неблокуючим
+import asyncio 
 
 from rss_parser import fetch_rss_news 
 from bloomberg_parser import fetch_bloomberg_news # Залишаємо імпорт, але функція поверне []
@@ -20,6 +15,10 @@ from bloomberg_parser import fetch_bloomberg_news # Залишаємо імпо�
 # === CONFIG & INIT ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("WebhookBot")
+
+# ЛІМІТ ДОВЖИНИ ПОВІДОМЛЕННЯ TELEGRAM
+# Встановлюємо 4000, щоб мати запас для Markdown-форматування та заголовків
+MAX_MESSAGE_LENGTH = 4000 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -33,9 +32,9 @@ WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# === НОВІ RSS ДЖЕРЕЛА (10 джерел) ===
+# === RSS ДЖЕРЕЛА (10 джерел) ===
 ALL_RSS_FEEDS = {
-    # 1. BBC Business (Поточне робоче джерело)
+    # 1. BBC Business 
     "BBC Business": "http://feeds.bbci.co.uk/news/business/rss.xml",
     
     # 2. Економічна Правда
@@ -62,15 +61,23 @@ async def start_cmd(message: Message):
         "👋 Привіт! Я бот, запущений на Render. "
         "Надішліть /news, щоб отримати свіжі новини з усіх 10 джерел (BBC, ЕП, Reuters, FT)."
     )
+    
+@dp.message(Command("bloomberg"))
+async def bloomberg_cmd_deprecated(message: Message):
+    # Додано явну обробку команди /bloomberg, щоб запобігти помилкам
+    await message.answer(
+        "⚠️ Команда /bloomberg більше не підтримується! "
+        "Парсер Bloomberg став нестабільним. "
+        "Використовуйте /news для отримання новин з усіх 10 надійних джерел (включно з FT та Reuters)."
+    )
 
 @dp.message(Command("news"))
 async def news_cmd(message: Message, bot: Bot):
     await message.answer("⏳ Отримую свіжі новини з 10 RSS-стрічок (BBC, ЕП, Reuters, FT). Це може зайняти до 15 секунд...")
     
     all_news = []
-    
-    # 1. Створюємо список асинхронних завдань
     tasks = []
+    
     for source_name, url in ALL_RSS_FEEDS.items():
         tasks.append(asyncio.to_thread(fetch_rss_news, url))
         
@@ -101,6 +108,7 @@ async def news_cmd(message: Message, bot: Bot):
         for n in all_news:
             if n['source'] != current_source:
                 current_source = n['source']
+                # Заголовок джерела має бути відокремлений
                 formatted_messages.append(f"\n\n\n**-- {current_source} --**") 
             
             # Екрануємо символи для безпечного Markdown
@@ -110,33 +118,53 @@ async def news_cmd(message: Message, bot: Bot):
             if 'bbc.co.uk' in link_text:
                  link_text = link_text.split('?at_medium')[0]
             
+            # Додаємо новину
             formatted_messages.append(f"📰 *{title_escaped}*\n[Читати повністю]({link_text})")
 
-        # 4. Відправка повідомлення (розділяємо, якщо воно занадто велике)
-        final_text = "\n\n".join(formatted_messages)
+        # 4. НАДІЙНА ВІДПРАВКА ПОВІДОМЛЕНЬ ЧАСТИНАМИ (КРИТИЧНЕ ВИПРАВЛЕННЯ)
         
-        if len(final_text) > 4096:
-            split_point = len(formatted_messages) // 2
+        # Додаємо загальну інформацію як префікс до першого повідомлення
+        initial_prefix = f"📰 **Загальна кількість новин: {len(all_news)}**\n\n"
+        
+        current_message_parts = [initial_prefix]
+        
+        # Список, куди будемо зберігати готові блоки повідомлень
+        messages_to_send = []
+        
+        for part in formatted_messages:
+            # Спроба додати наступну частину
+            test_message = "\n\n".join(current_message_parts + [part])
             
-            chunk1 = "\n\n".join(formatted_messages[:split_point])
-            chunk2 = "\n\n".join(formatted_messages[split_point:])
+            if len(test_message) > MAX_MESSAGE_LENGTH:
+                # Якщо ліміт перевищено, зберігаємо поточний зібраний блок
+                messages_to_send.append("\n\n".join(current_message_parts))
+                
+                # Починаємо новий блок з поточного "part"
+                current_message_parts = [part]
+            else:
+                # Ліміт не перевищено, додаємо частину до поточного блоку
+                current_message_parts.append(part)
 
-            await message.answer(
-                f"📰 **Загальна кількість новин: {len(all_news)}**\n\n" + chunk1, 
-                parse_mode="Markdown", 
-                disable_web_page_preview=True
-            )
-            await message.answer(
-                chunk2, 
-                parse_mode="Markdown", 
-                disable_web_page_preview=True
-            )
+        # Додаємо останній, незавершений блок
+        if current_message_parts and (len(current_message_parts) > 1 or current_message_parts[0] != initial_prefix):
+             messages_to_send.append("\n\n".join(current_message_parts))
+
+
+        # 5. Відправка повідомлень
+        
+        if messages_to_send:
+            for msg_content in messages_to_send:
+                # Якщо повідомлення порожнє або містить лише префікс, пропускаємо його
+                if len(msg_content.strip()) < len(initial_prefix.strip()) + 5 and msg_content.startswith(initial_prefix):
+                    continue
+
+                await message.answer(
+                    msg_content, 
+                    parse_mode="Markdown", 
+                    disable_web_page_preview=True
+                )
         else:
-            await message.answer(
-                f"📰 **Загальна кількість новин: {len(all_news)}**\n\n" + final_text, 
-                parse_mode="Markdown", 
-                disable_web_page_preview=True
-            )
+            await message.answer("❌ Новини було отримано, але стався внутрішній збій при їх формуванні.")
 
 
     except Exception as e:

@@ -149,8 +149,12 @@ def main():
     app.on_shutdown.append(on_shutdown)
 
     logger.info("🌐 Starting web server on 0.0.0.0:10000 ...")
-    # web.run_app блокує виконання і запускає цикл aiohttp
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    
+    # === КРИТИЧНА ЗМІНА ТУТ ===
+    # Примусово вказуємо Render, що він повинен використовувати $PORT, 
+    # а не фіксований 10000, щоб уникнути конфліктів aiohttp.
+    port = int(os.getenv("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()

@@ -5,12 +5,12 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiogram.client.default import DefaultBotProperties # <<< НОВИЙ ІМПОРТ
+from aiogram.client.default import DefaultBotProperties 
 
 import html 
 import asyncio 
 
-# >>> НОВИЙ ІМПОРТ: Менеджер кешу <<<
+# >>> ІМПОРТ: Менеджер кешу <<<
 from cache_manager import CacheManager 
 
 # === CONFIG & INIT ===
@@ -34,7 +34,7 @@ WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown")) 
 dp = Dispatcher()
 
-# >>> НОВА ІНІЦІАЛІЗАЦІЯ: МЕНЕДЖЕР КЕШУ <<<
+# >>> ІНІЦІАЛІЗАЦІЯ: МЕНЕДЖЕР КЕШУ <<<
 cache_manager = CacheManager()
 
 
@@ -59,7 +59,7 @@ async def bloomberg_cmd_deprecated(message: Message):
 async def news_cmd(message: Message):
     await message.answer("✅ Завантажую кеш новин. Це займає менше секунди...")
     
-    try:
+    try: # <--- try block starts here
         # 1. Завантажуємо кеш, який був збережений у фоновому процесі 
         cache_data = cache_manager.load_cache()
         articles = cache_data.get('articles', [])
@@ -93,7 +93,6 @@ async def news_cmd(message: Message):
                 formatted_messages.append(f"\n\n\n**-- {current_source} --**") 
             
             # Екрануємо символи для безпечного Markdown (дуже важливо!)
-            # Це важливо для коректного відображення символів _, *, [ та ` у Telegram
             title_escaped = n['title'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
 
             # Очищення посилання BBC від трекінгових параметрів
@@ -121,7 +120,6 @@ async def news_cmd(message: Message):
                 current_message_parts.append(part)
 
         # Додаємо останній, незавершений блок
-        # Перевіряємо, чи є щось, крім початкового префікса
         if current_message_parts and (len(current_message_parts) > 1 or current_message_parts[0] != initial_prefix):
              messages_to_send.append("\n\n".join(current_message_parts)) 
 
@@ -131,5 +129,45 @@ async def news_cmd(message: Message):
                 if msg_content.strip():
                     await message.answer(
                         msg_content, 
-                        # parse_mode="Markdown", # Це вже встановлено за замовчуванням у Bot init
-                        disable_web_page_preview=True)
+                        disable_web_page_preview=True
+                    )
+        else:
+            await message.answer("❌ Новини було отримано, але стався внутрішній збій при їх формуванні.")
+
+    except Exception as e: # <--- except block starts here, same indent as try
+        logger.exception("Помилка в /news: %s", e)
+        await message.answer(f"❌ Помилка при читанні кешу: {e}")
+
+# === STARTUP / SHUTDOWN (Async Operations) ===
+async def on_startup(app):
+    logger.info(f"Setting webhook to {WEBHOOK_URL}")
+    await bot.set_webhook(WEBHOOK_URL)
+    logger.info("✅ Webhook successfully set.")
+
+async def on_shutdown(app):
+    logger.info("Deleting webhook...")
+    await bot.delete_webhook()
+    await bot.session.close()
+    logger.info("✅ Shutdown complete.")
+
+# === HEALTH CHECK ===
+async def handle_health(request):
+    return web.Response(text="✅ OK", status=200)
+
+# === MAIN (Synchronous Server Run) ===
+def main():
+    app = web.Application()
+
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+
+    app.router.add_get("/", handle_health)
+
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    port = int(os.getenv("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+    main()

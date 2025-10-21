@@ -23,12 +23,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("Environment variable BOT_TOKEN is required")
 
+# Використовуйте змінну оточення, встановлену на Render, або замініть на свій URL
 WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "https://universal-bot-live.onrender.com")
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=BOT_TOKEN, parse_mode="Markdown")
 dp = Dispatcher()
 
 # >>> НОВА ІНІЦІАЛІЗАЦІЯ: МЕНЕДЖЕР КЕШУ <<<
@@ -51,7 +52,7 @@ async def bloomberg_cmd_deprecated(message: Message):
         "Використовуйте /news для отримання новин з усіх 10 надійних джерел (включно з FT та Reuters)."
     )
 
-# >>> НОВИЙ ОБРОБНИК /NEWS (читає кеш) <<<
+# >>> ОБРОБНИК /NEWS (читає кеш) <<<
 @dp.message(Command("news"))
 async def news_cmd(message: Message):
     await message.answer("✅ Завантажую кеш новин. Це займає менше секунди...")
@@ -89,10 +90,11 @@ async def news_cmd(message: Message):
                 # Заголовок джерела
                 formatted_messages.append(f"\n\n\n**-- {current_source} --**") 
             
-            # Екрануємо символи для безпечного Markdown
+            # Екрануємо символи для безпечного Markdown (дуже важливо!)
+            # Це важливо для коректного відображення символів _, *, [ та ` у Telegram
             title_escaped = n['title'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
 
-            # Очищення посилання BBC
+            # Очищення посилання BBC від трекінгових параметрів
             link_text = n['link']
             if 'bbc.co.uk' in link_text:
                  link_text = link_text.split('?at_medium')[0]
@@ -110,12 +112,14 @@ async def news_cmd(message: Message):
             test_message = "\n\n".join(current_message_parts + [part])
             
             if len(test_message) > MAX_MESSAGE_LENGTH:
+                # Повідомлення занадто довге, відправляємо поточний блок
                 messages_to_send.append("\n\n".join(current_message_parts))
-                current_message_parts = [part] # Починаємо новий блок
+                current_message_parts = [part] # Починаємо новий блок з цієї частини
             else:
                 current_message_parts.append(part)
 
         # Додаємо останній, незавершений блок
+        # Перевіряємо, чи є щось, крім початкового префікса
         if current_message_parts and (len(current_message_parts) > 1 or current_message_parts[0] != initial_prefix):
              messages_to_send.append("\n\n".join(current_message_parts)) 
 

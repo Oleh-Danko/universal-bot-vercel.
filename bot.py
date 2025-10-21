@@ -59,14 +59,16 @@ async def bloomberg_cmd_deprecated(message: Message):
 async def news_cmd(message: Message):
     await message.answer("✅ Завантажую кеш новин. Це займає менше секунди...")
     
-    try: # <--- try block starts here
+    try:
         # 1. Завантажуємо кеш, який був збережений у фоновому процесі 
         cache_data = cache_manager.load_cache()
         articles = cache_data.get('articles', [])
         
         # Обрізаємо час для красивого відображення
         timestamp = cache_data.get('timestamp', 'Невідомо')
-        if timestamp != 'Невідомо':
+        
+        # ВИПРАВЛЕННЯ NoneType ПОМИЛКИ: Перевіряємо, чи це рядок, перш ніж обрізати
+        if isinstance(timestamp, str) and timestamp != 'Невідомо':
             timestamp = timestamp[:16].replace('T', ' ')
 
         if not articles:
@@ -134,7 +136,7 @@ async def news_cmd(message: Message):
         else:
             await message.answer("❌ Новини було отримано, але стався внутрішній збій при їх формуванні.")
 
-    except Exception as e: # <--- except block starts here, same indent as try
+    except Exception as e:
         logger.exception("Помилка в /news: %s", e)
         await message.answer(f"❌ Помилка при читанні кешу: {e}")
 

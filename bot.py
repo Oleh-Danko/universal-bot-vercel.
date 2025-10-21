@@ -132,4 +132,4 @@ async def news_cmd(message: Message):
                     await message.answer(
                         msg_content, 
                         # parse_mode="Markdown", # Це вже встановлено за замовчуванням у Bot init
-                        disable_web_page_preview=True
+                        disable_web_page_preview=True)

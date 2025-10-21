@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.client.default import DefaultBotProperties # <<< НОВИЙ ІМПОРТ
 
 import html 
 import asyncio 
@@ -29,7 +30,8 @@ WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "https://universal-bot-live.onrender.com
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 
-bot = Bot(token=BOT_TOKEN, parse_mode="Markdown")
+# >>> ВИПРАВЛЕНО: Використовуємо DefaultBotProperties для aiogram 3.7+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown")) 
 dp = Dispatcher()
 
 # >>> НОВА ІНІЦІАЛІЗАЦІЯ: МЕНЕДЖЕР КЕШУ <<<
@@ -129,46 +131,5 @@ async def news_cmd(message: Message):
                 if msg_content.strip():
                     await message.answer(
                         msg_content, 
-                        parse_mode="Markdown", 
+                        # parse_mode="Markdown", # Це вже встановлено за замовчуванням у Bot init
                         disable_web_page_preview=True
-                    )
-        else:
-            await message.answer("❌ Новини було отримано, але стався внутрішній збій при їх формуванні.")
-
-    except Exception as e:
-        logger.exception("Помилка в /news: %s", e)
-        await message.answer(f"❌ Помилка при читанні кешу: {e}")
-
-# === STARTUP / SHUTDOWN (Async Operations) ===
-async def on_startup(app):
-    logger.info(f"Setting webhook to {WEBHOOK_URL}")
-    await bot.set_webhook(WEBHOOK_URL)
-    logger.info("✅ Webhook successfully set.")
-
-async def on_shutdown(app):
-    logger.info("Deleting webhook...")
-    await bot.delete_webhook()
-    await bot.session.close()
-    logger.info("✅ Shutdown complete.")
-
-# === HEALTH CHECK ===
-async def handle_health(request):
-    return web.Response(text="✅ OK", status=200)
-
-# === MAIN (Synchronous Server Run) ===
-def main():
-    app = web.Application()
-
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-
-    app.router.add_get("/", handle_health)
-
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-
-    port = int(os.getenv("PORT", 10000))
-    web.run_app(app, host="0.0.0.0", port=port)
-
-if __name__ == "__main__":
-    main()

@@ -1,139 +1,159 @@
+import feedparser
 import json
-import asyncio
+import logging
 import os
-from datetime import datetime, timedelta
-from loguru import logger # Використовуємо loguru для гарного логування
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
-# Імпортуємо фактичні парсери
-from rss_parser import fetch_rss_news
-from bloomberg_parser import fetch_bloomberg_news 
+# === КОНФІГУРАЦІЯ ===
+logger = logging.getLogger(__name__)
 
-# === CONFIG ===
-CACHE_FILE = "news_cache.json"
+# МАКСИМАЛЬНА КІЛЬКІСТЬ СТАТЕЙ НА ДЖЕРЕЛО (ЗБІЛЬШЕНО З 50 ДО 100)
+# Це дозволить нам завантажити 10 джерел * 100 статей = 1000 спроб, 
+# що має дати 300+ реально корисних новин.
+ARTICLE_LIMIT_PER_SOURCE = 100 
 
-# Всі RSS-стрічки, які ми парсимо
-ALL_RSS_FEEDS = {
-    # 1. BBC Business 
-    "BBC Business": "http://feeds.bbci.co.uk/news/business/rss.xml",
-    # 2. Економічна Правда
-    "ЕП Фінанси": "https://www.epravda.com.ua/rss/finances/",
-    "ЕП Колонки/Думки": "https://www.epravda.com.ua/rss/columns/", 
-    # 3. Reuters 
-    "Reuters Бізнес": "http://feeds.reuters.com/reuters/businessNews",
-    "Reuters Ринки": "http://feeds.reuters.com/reuters/marketsNews",
-    "Reuters Технології": "http://feeds.reuters.com/reuters/technologyNews",
-    # 4. Financial Times (FT)
-    "FT Компанії": "https://www.ft.com/companies?format=rss",
-    "FT Технології": "https://www.ft.com/technology?format=rss",
-    "FT Ринки": "https://www.ft.com/markets?format=rss",
-    "FT Думки": "https://www.ft.com/opinion?format=rss"
+# Файл для збереження кешу
+CACHE_FILE = 'news_cache.json'
+
+# Джерела RSS (10 джерел)
+RSS_SOURCES = {
+    # BBC (UKRAINE - Ua/Ru - high volume, but often duplicates/low quality)
+    "BBC News Ukraine": "https://www.bbc.com/ukrainian/rss.xml",
+    
+    # Economics/Finance (High Quality, often English, key for business context)
+    "Економічна правда": "https://www.epravda.com.ua/rss/",
+    "Financial Times": "https://www.ft.com/?format=rss",
+    "Reuters Top News": "https://www.reuters.com/rssfeed/in/topnews", 
+    "The Guardian (World)": "https://www.theguardian.com/world/rss",
+    
+    # General/World News (Medium volume, good quality)
+    "Sky News": "http://feeds.skynews.com/feeds/rss/home.xml",
+    "Al Jazeera": "https://www.aljazeera.com/xml/rss/all.xml",
+    "DW (English)": "https://rss.dw.com/xml/rss-en-all",
+    
+    # Tech/Business
+    "TechCrunch": "https://techcrunch.com/feed/",
+    
+    # Mix
+    "Укрінформ (Top)": "https://www.ukrinform.ua/rss",
 }
 
-# ====================================================================
 
+# === КЛАС ДЛЯ УПРАВЛІННЯ КЕШЕМ ===
 class CacheManager:
-    """Клас для роботи з файлом кешу news_cache.json."""
-    
     def __init__(self):
-        if not os.path.exists(CACHE_FILE):
-            logger.warning(f"Файл кешу {CACHE_FILE} не знайдено. Буде створено.")
+        self._cache = self._load_from_file()
 
-    def load_cache(self):
-        """Завантажує дані кешу з файлу."""
+    def _load_from_file(self):
+        """Завантажує кеш з файлу, якщо він існує."""
         if os.path.exists(CACHE_FILE):
             try:
                 with open(CACHE_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    logger.info(f"Кеш завантажено. Час оновлення: {data.get('timestamp')}")
-                    # УВАГА: ВИКОРИСТОВУЄМО КЛЮЧ 'articles'
-                    if 'articles' in data:
-                        return data
-                    return {} 
-            except (json.JSONDecodeError, IOError) as e:
-                logger.error(f"Помилка завантаження кешу: {e}. Створюю новий кеш.")
+                    logger.info(f"Cache loaded from file. Articles count: {len(data.get('articles', []))}")
+                    return data
+            except (IOError, json.JSONDecodeError) as e:
+                logger.error(f"Error loading cache file: {e}. Starting with empty cache.")
                 return {}
         return {}
 
-    def save_cache(self, articles_data):
-        """Зберігає дані новин у файл кешу з позначкою часу."""
-        timestamp = datetime.now().isoformat()
-        cache_data = {
-            "timestamp": timestamp,
-            "articles": articles_data # <<< ВИКОРИСТОВУЄМО ПРАВИЛЬНИЙ КЛЮЧ
-        }
+    def save_cache(self, data):
+        """Зберігає кеш у файл."""
         try:
             with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, ensure_ascii=False, indent=4)
-                logger.info(f"✅ Кеш новин успішно збережено. Час: {timestamp}")
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            self._cache = data
+            logger.info(f"Cache saved successfully. Articles count: {len(data['articles'])}")
         except IOError as e:
-            logger.error(f"Помилка збереження кешу: {e}")
+            logger.error(f"Error saving cache file: {e}")
+
+    def load_cache(self):
+        """Повертає поточний кеш (читання з пам'яті)."""
+        return self._cache or self._load_from_file()
 
 
-async def fetch_all_news_async():
-    """Асинхронно отримує всі новини з усіх джерел."""
-    logger.info("Починаю асинхронне отримання новин з усіх джерел.")
-    all_news = []
-    tasks = []
+# === ФУНКЦІЇ ПАРСИНГУ ===
+def parse_source(source_name, rss_url):
+    """Парсить один RSS-потік та повертає список статей."""
+    logger.info(f"Parsing {source_name}...")
+    articles = []
     
-    # 1. Додаємо завдання для RSS
-    for source_name, url in ALL_RSS_FEEDS.items():
-        tasks.append(asyncio.to_thread(fetch_rss_news, url)) 
-    
-    # 2. ФІКС: ДОДАЄМО BLOOMBERG ДО СПИСКУ ЗАВДАНЬ ДЛЯ ПАРАЛЕЛЬНОГО ВИКОНАННЯ
-    # Це гарантує, що він запускається разом з RSS і його результат є останнім у results.
-    tasks.append(asyncio.to_thread(fetch_bloomberg_news))
-        
     try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 3. ФІКС: Обробка результатів RSS (це всі, крім останнього)
-        rss_results = results[:-1] 
-        for source_name, result in zip(ALL_RSS_FEEDS.keys(), rss_results):
-            if isinstance(result, list):
-                for item in result:
-                    item['source'] = source_name
-                    if isinstance(item, dict):
-                        all_news.append(item)
-            else:
-                logger.error(f"Помилка при отриманні новин з {source_name} (RSS): {result}")
-        
-        # 4. ФІКС: Обробка результатів Bloomberg (це останній результат у списку results)
-        bloomberg_news = results[-1]
-        if isinstance(bloomberg_news, list):
-             for item in bloomberg_news:
-                    item['source'] = 'Bloomberg'
-                    if isinstance(item, dict):
-                        all_news.append(item)
-        elif bloomberg_news is not None:
-             logger.error(f"Помилка при отриманні новин з Bloomberg: {bloomberg_news}")
-
-
-        logger.info(f"✅ Зібрано загалом {len(all_news)} новин.")
-        return all_news
-
+        # Встановлюємо таймаут 10 секунд
+        feed = feedparser.parse(rss_url, timeout=10)
     except Exception as e:
-        logger.error(f"Глобальна помилка при парсингу: {e}")
+        logger.error(f"Error parsing {source_name} ({rss_url}): {e}")
         return []
 
-# === ФУНКЦІЯ, ЯКУ БУДЕ ІМПОРТУВАТИ BOT.PY ===
-async def run_cache_update():
-    """Головна асинхронна функція для оновлення кешу (Fetch + Save)."""
-    logger.info("Запущено процес оновлення кешу новин.")
-    
-    # Виконуємо парсинг
-    updated_news = await fetch_all_news_async()
-    
-    if updated_news:
-        # Сортування: якщо статті мають 'pubDate', сортуємо за нею, інакше просто сортуємо за джерелом
+    # ЛІМІТ ЗБІЛЬШЕНО ДО ARTICLE_LIMIT_PER_SOURCE (100)
+    for entry in feed.entries[:ARTICLE_LIMIT_PER_SOURCE]:
         try:
-            # Сортуємо в зворотному порядку, щоб найновіші були першими
-            updated_news.sort(key=lambda x: x.get('pubDate', ''), reverse=True)
-        except TypeError:
-            # Fallback на сортування за джерелом, якщо дати не існують
-            updated_news.sort(key=lambda x: x['source'])
+            # Обов'язкові поля
+            title = entry.get('title')
+            link = entry.get('link')
+            
+            # Фільтруємо неповні статті
+            if not title or not link:
+                continue
 
-        # Зберігаємо оновлений кеш
-        manager = CacheManager()
-        manager.save_cache(updated_news)
-    else:
-        logger.warning("Не знайдено жодної статті. Кеш не оновлено.")
+            article = {
+                'title': title.strip(),
+                'link': link.strip(),
+                'source': source_name,
+                # 'published': entry.get('published_parsed') # Не використовуємо datetime object тут
+            }
+            articles.append(article)
+        except Exception as e:
+            logger.warning(f"Skipping article from {source_name} due to error: {e}")
+    
+    logger.info(f"Finished parsing {source_name}. Found {len(articles)} articles.")
+    return articles
+
+
+def run_cache_update():
+    """Виконує паралельний парсинг усіх джерел та оновлює кеш."""
+    logger.info("Starting global cache update...")
+    
+    all_articles = []
+    
+    # Використовуємо ThreadPoolExecutor для паралельного парсингу
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for name, url in RSS_SOURCES.items():
+            futures.append(executor.submit(parse_source, name, url))
+        
+        # Збираємо результати
+        for future in futures:
+            try:
+                articles = future.result()
+                all_articles.extend(articles)
+            except Exception as e:
+                logger.error(f"Error collecting results from a parser thread: {e}")
+    
+    # Видалення дублікатів на основі посилання (link)
+    unique_links = set()
+    final_articles = []
+    
+    # Сортування перед видаленням дублікатів (за джерелом, наприклад)
+    all_articles.sort(key=lambda x: x['source'])
+    
+    for article in all_articles:
+        if article['link'] not in unique_links:
+            unique_links.add(article['link'])
+            final_articles.append(article)
+            
+    # Фінальне сортування: найновіші статті (хоча RSS зазвичай вже відсортовані за новизною)
+    # Залишаємо сортування за джерелом для кращого відображення в боті
+    # final_articles.sort(key=lambda x: x.get('published', ''), reverse=True)
+    
+    # Оновлення кешу
+    cache_manager = CacheManager()
+    new_cache_data = {
+        'timestamp': datetime.now().isoformat(),
+        'articles': final_articles
+    }
+    
+    cache_manager.save_cache(new_cache_data)
+    logger.info(f"Global cache update finished. Total unique articles saved: {len(final_articles)}")
+    return len(final_articles)

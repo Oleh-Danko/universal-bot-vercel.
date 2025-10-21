@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio 
 from aiohttp import web
+from datetime import datetime # Додано для використання datetime.now()
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
@@ -17,6 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("WebhookBot")
 
 # ЛІМІТ ДОВЖИНИ ПОВІДОМЛЕННЯ TELEGRAM
+# Хоча використовуємо 4000, змінна залишається, але не використовується в логіці chunking, щоб уникнути плутанини
 MAX_MESSAGE_LENGTH = 4000 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -30,7 +32,8 @@ WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 
 # Ініціалізація Бота та Диспетчера
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown")) 
+# Змінюємо default parse_mode на None, оскільки в news_cmd використовуємо HTML
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=None)) 
 dp = Dispatcher()
 
 # ІНІЦІАЛІЗАЦІЯ: МЕНЕДЖЕР КЕШУ
@@ -75,6 +78,7 @@ async def bloomberg_cmd_deprecated(message: Message):
     )
 
 # ОБРОБНИК /NEWS (читає кеш)
+# ПОВНІСТЮ ВИПРАВЛЕНА ФУНКЦІЯ: ВИДАЛЕНО ЛІМІТ 5 СТАТЕЙ, ВПРОВАДЖЕНО CHUNKING LOGIC
 @dp.message(Command("news"))
 async def news_cmd(message: Message):
     await message.answer("✅ Завантажую кеш новин. Це займає менше секунди...")
@@ -82,87 +86,84 @@ async def news_cmd(message: Message):
     try:
         # 1. Завантажуємо кеш
         cache_data = cache_manager.load_cache()
-        articles = cache_data.get('articles', []) # ВИПРАВЛЕНО: очікуємо ключ 'articles'
+        articles = cache_data.get('articles', [])
         
-        # Обрізаємо час для красивого відображення (з безпечною перевіркою)
+        # Обробка часу
         timestamp = cache_data.get('timestamp', 'Невідомо')
-        
-        # ВИПРАВЛЕННЯ NoneType ПОМИЛКИ: Перевіряємо, чи це рядок, перш ніж обрізати
         if isinstance(timestamp, str) and timestamp != 'Невідомо':
             timestamp = timestamp[:16].replace('T', ' ')
 
         if not articles:
-            # Це правильне повідомлення, якщо кеш порожній
             await message.answer("❌ Кеш новин порожній. Спробуйте пізніше. Можливо, фоновий процес ще не спрацював.")
             return
 
-        # 2. Формування повідомлення (обмежуємо до 5 статей на джерело)
+        total_count = len(articles)
         
-        # Сортуємо, щоб джерела йшли послідовно
+        # 2. Сортуємо для коректного групування за джерелами 
         articles.sort(key=lambda x: x['source'])
         
-        current_source = None
-        formatted_messages = []
-        source_counts = {} 
         
-        for n in articles:
-            source_name = n['source']
-            if source_counts.get(source_name, 0) >= 5: # Ліміт 5 статей на джерело
-                continue
-                
-            if source_name != current_source:
-                current_source = source_name
-                # Заголовок джерела
-                formatted_messages.append(f"\n\n\n**-- {current_source} --**") 
+        # --- ЛОГІКА РОЗБИТТЯ ПОВІДОМЛЕНЬ (Chunking) ---
+        
+        TELEGRAM_CHUNK_LIMIT = 4000
+        formatted_chunk = ""
+        sent_count = 0
+        current_source_title = None
+        
+        # Первинне повідомлення про статус (відправляємо окремо для чистоти)
+        initial_prefix = f"📰 <b>Останні новини</b> (оновлено: {timestamp}). <b>Загалом у кеші: {total_count} статей.</b>\n\n"
+        await message.answer(initial_prefix, parse_mode="HTML")
+        
+        # 3. Основний цикл ітерації по ВСІХ статтях (Ліміт 5 статей видалено)
+        for article in articles:
             
-            # Екрануємо символи для безпечного Markdown 
-            title_escaped = n['title'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
-
-            # Очищення посилання BBC від трекінгових параметрів
-            link_text = n['link']
+            # a) Формування Заголовка Джерела (якщо змінилося)
+            source_header = ""
+            if article['source'] != current_source_title:
+                source_header = f"\n\n-- {article['source']} --\n\n"
+                current_source_title = article['source']
+            
+            # b) Очищення посилання BBC та підготовка посилання
+            link_text = article['link']
             if 'bbc.co.uk' in link_text:
                  link_text = link_text.split('?at_medium')[0]
-            
-            # ВИПРАВЛЕНО: Додано перевірку на link_text, щоб уникнути помилок в Markdown
-            link_display = f"[Читати повністю]({link_text})" if link_text else ""
+                 
+            # c) Форматування Тексту Статті (використовуємо HTML)
+            article_text = f"📰 <b>{article['title']}</b>\n<a href='{link_text}'>Читати повністю</a>\n" 
 
-            formatted_messages.append(f"📰 *{title_escaped}*\n{link_display}")
-            source_counts[source_name] = source_counts.get(source_name, 0) + 1
-
-        # 3. НАДІЙНА ВІДПРАВКА ПОВІДОМЛЕНЬ ЧАСТИНАМИ 
-        
-        initial_prefix = f"📰 **Останні новини (оновлено: {timestamp}). Загалом у кеші: {len(articles)} статей.**\n\n"
-        current_message_parts = [initial_prefix]
-        messages_to_send = []
-        
-        for part in formatted_messages:
-            test_message = "\n\n".join(current_message_parts + [part])
             
-            if len(test_message) > MAX_MESSAGE_LENGTH:
-                # Повідомлення занадто довге, відправляємо поточний блок
-                messages_to_send.append("\n\n".join(current_message_parts))
-                current_message_parts = [part] # Починаємо новий блок з цієї частини
+            # d) ПЕРЕВІРКА ЛІМІТУ (Chunking Logic)
+            # Якщо додавання наступного блоку (заголовка + статті) перевищить ліміт:
+            if len(formatted_chunk) + len(source_header) + len(article_text) > TELEGRAM_CHUNK_LIMIT:
+                
+                # i. Надсилаємо поточний накопичений блок
+                if formatted_chunk.strip():
+                    await message.answer(formatted_chunk, parse_mode="HTML", disable_web_page_preview=True)
+                    await asyncio.sleep(0.3) # Захист від Flood Control
+                
+                # ii. Починаємо новий блок з поточних заголовка джерела та статті
+                formatted_chunk = source_header + article_text
+            
             else:
-                current_message_parts.append(part)
+                # iii. Додаємо до поточного блоку
+                formatted_chunk += source_header + article_text
+            
+            sent_count += 1 
 
-        # Додаємо останній, незавершений блок
-        if current_message_parts and (len(current_message_parts) > 1 or current_message_parts[0] != initial_prefix):
-             messages_to_send.append("\n\n".join(current_message_parts)) 
+        # 4. ВІДПРАВКА ОСТАННЬОГО БЛОКУ (Фінальний Flush)
+        if formatted_chunk.strip():
+            await message.answer(formatted_chunk, parse_mode="HTML", disable_web_page_preview=True)
 
-        # 4. Відправка повідомлень
-        if messages_to_send:
-            for msg_content in messages_to_send:
-                if msg_content.strip():
-                    await message.answer(
-                        msg_content, 
-                        disable_web_page_preview=True
-                    )
-        else:
-            await message.answer("❌ Новини було отримано, але стався внутрішній збій при їх формуванні.")
+        # 5. Фінальне повідомлення (Підтвердження, що надіслано ВСІ статті)
+        await message.answer(f"✅ Успішно надіслано всі {sent_count} новини із кешу. Загальна кількість: {total_count} статей.")
+
 
     except Exception as e:
-        logger.exception("Помилка в /news: %s", e)
-        await message.answer(f"❌ Помилка при читанні кешу: {e}")
+        logger.exception("Критична помилка в /news: %s", e)
+        await message.answer(f"❌ Критична помилка при обробці команди /news: {e}")
+
+# Кінець функції news_cmd
+
 
 # === STARTUP / SHUTDOWN (Async Operations) ===
 async def on_startup(app):

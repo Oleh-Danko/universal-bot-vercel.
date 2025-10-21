@@ -25,7 +25,7 @@ async def fetch_rss_news():
                     for a in soup.find_all("a", href=True):
                         title = a.get_text(strip=True)
                         link = a["href"]
-                        if title and link:
+                        if title and link.startswith("http"):
                             results.append({"title": title, "link": link, "source": url})
             except:
                 continue

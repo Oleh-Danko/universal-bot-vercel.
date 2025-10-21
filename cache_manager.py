@@ -25,8 +25,6 @@ class CacheManager:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
 async def run_cache_update():
-    articles = []
-    for item in await fetch_rss_news():
-        articles.append(item)
+    articles = await fetch_rss_news()
     cm = CacheManager()
     cm.save_cache(articles)

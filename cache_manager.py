@@ -71,37 +71,42 @@ class CacheManager:
 
 async def fetch_all_news_async():
     """Асинхронно отримує всі новини з усіх джерел."""
-    logger.info("Починаю асинхронне отримання новин з усіх RSS-стрічок.")
+    logger.info("Починаю асинхронне отримання новин з усіх джерел.")
     all_news = []
     tasks = []
     
-    # Додаємо завдання для RSS (викликаємо блокуючі функції через asyncio.to_thread)
+    # 1. Додаємо завдання для RSS
     for source_name, url in ALL_RSS_FEEDS.items():
-        # fetch_rss_news повертає список статей
         tasks.append(asyncio.to_thread(fetch_rss_news, url)) 
+    
+    # 2. ФІКС: ДОДАЄМО BLOOMBERG ДО СПИСКУ ЗАВДАНЬ ДЛЯ ПАРАЛЕЛЬНОГО ВИКОНАННЯ
+    # Це гарантує, що він запускається разом з RSS і його результат є останнім у results.
+    tasks.append(asyncio.to_thread(fetch_bloomberg_news))
         
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Обробка результатів RSS
-        for source_name, result in zip(ALL_RSS_FEEDS.keys(), results):
+        # 3. ФІКС: Обробка результатів RSS (це всі, крім останнього)
+        rss_results = results[:-1] 
+        for source_name, result in zip(ALL_RSS_FEEDS.keys(), rss_results):
             if isinstance(result, list):
                 for item in result:
                     item['source'] = source_name
-                    # Перевірка: елемент має бути словником
                     if isinstance(item, dict):
                         all_news.append(item)
             else:
-                logger.error(f"Помилка при отриманні новин з {source_name}: {result}")
+                logger.error(f"Помилка при отриманні новин з {source_name} (RSS): {result}")
         
-        # Додаємо Bloomberg (використовуємо to_thread, оскільки вона блокуюча)
-        # Припускаємо, що fetch_bloomberg_news знаходиться у bloomberg_parser.py
-        bloomberg_news = await asyncio.to_thread(fetch_bloomberg_news)
+        # 4. ФІКС: Обробка результатів Bloomberg (це останній результат у списку results)
+        bloomberg_news = results[-1]
         if isinstance(bloomberg_news, list):
              for item in bloomberg_news:
                     item['source'] = 'Bloomberg'
                     if isinstance(item, dict):
                         all_news.append(item)
+        elif bloomberg_news is not None:
+             logger.error(f"Помилка при отриманні новин з Bloomberg: {bloomberg_news}")
+
 
         logger.info(f"✅ Зібрано загалом {len(all_news)} новин.")
         return all_news

@@ -10,8 +10,9 @@ from aiogram.client.default import DefaultBotProperties
 import html 
 import asyncio 
 
-# >>> ІМПОРТ: Менеджер кешу <<<
+# >>> ІМПОРТ ПАРСЕРА ТА МЕНЕДЖЕРА КЕШУ
 from cache_manager import CacheManager 
+from parser import run_full_parser # <-- ТЕПЕР МИ ІМПОРТУЄМО ФУНКЦІЮ ПАРСЕРА
 
 # === CONFIG & INIT ===
 logging.basicConfig(level=logging.INFO)
@@ -30,12 +31,33 @@ WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "https://universal-bot-live.onrender.com
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 
-# >>> ВИПРАВЛЕНО: Використовуємо DefaultBotProperties для aiogram 3.7+
+# ВИПРАВЛЕНО: Використовуємо DefaultBotProperties для aiogram 3.7+
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown")) 
 dp = Dispatcher()
 
-# >>> ІНІЦІАЛІЗАЦІЯ: МЕНЕДЖЕР КЕШУ <<<
+# ІНІЦІАЛІЗАЦІЯ: МЕНЕДЖЕР КЕШУ
 cache_manager = CacheManager()
+
+
+# === ФОНОВА ЗАДАЧА: ПАРСЕР ===
+async def run_parser_background():
+    """Запускає парсер у нескінченному циклі з інтервалом."""
+    # ПЕРША ЗАГРУЗКА ПРИ СТАРТІ (необхідно, щоб кеш не був порожнім)
+    logger.info("Starting initial parser run...")
+    # Ми не чекаємо завершення парсера, просто запускаємо його
+    await run_full_parser()
+    logger.info("Initial parser run finished.")
+    
+    # ПОДАЛЬШИЙ ЦИКЛ ОНОВЛЕННЯ (раз на 60 хвилин)
+    while True:
+        # Чекаємо 60 хвилин (3600 секунд)
+        await asyncio.sleep(3600) 
+        try:
+            logger.info("Starting scheduled parser run...")
+            await run_full_parser()
+            logger.info("Scheduled parser run finished.")
+        except Exception as e:
+            logger.error(f"Error during scheduled parser run: {e}")
 
 
 # === HANDLERS ===
@@ -54,24 +76,24 @@ async def bloomberg_cmd_deprecated(message: Message):
         "Використовуйте /news для отримання новин з усіх 10 надійних джерел (включно з FT та Reuters)."
     )
 
-# >>> ОБРОБНИК /NEWS (читає кеш) <<<
+# ОБРОБНИК /NEWS (читає кеш)
 @dp.message(Command("news"))
 async def news_cmd(message: Message):
     await message.answer("✅ Завантажую кеш новин. Це займає менше секунди...")
     
     try:
-        # 1. Завантажуємо кеш, який був збережений у фоновому процесі 
+        # 1. Завантажуємо кеш
         cache_data = cache_manager.load_cache()
         articles = cache_data.get('articles', [])
         
-        # Обрізаємо час для красивого відображення
+        # Обрізаємо час для красивого відображення (з безпечною перевіркою)
         timestamp = cache_data.get('timestamp', 'Невідомо')
         
-        # ВИПРАВЛЕННЯ NoneType ПОМИЛКИ: Перевіряємо, чи це рядок, перш ніж обрізати
         if isinstance(timestamp, str) and timestamp != 'Невідомо':
             timestamp = timestamp[:16].replace('T', ' ')
 
         if not articles:
+            # Це правильне повідомлення, якщо кеш порожній
             await message.answer("❌ Кеш новин порожній. Спробуйте пізніше. Можливо, фоновий процес ще не спрацював.")
             return
 
@@ -145,6 +167,11 @@ async def on_startup(app):
     logger.info(f"Setting webhook to {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL)
     logger.info("✅ Webhook successfully set.")
+    
+    # !!! КЛЮЧОВИЙ МОМЕНТ: ЗАПУСК ПАРСЕРА ЯК ФОНОВОЇ ЗАДАЧІ !!!
+    # Це гарантує, що парсер працюватиме ПАРАЛЕЛЬНО з веб-сервером
+    asyncio.create_task(run_parser_background())
+    logger.info("✅ Parser background task scheduled.")
 
 async def on_shutdown(app):
     logger.info("Deleting webhook...")

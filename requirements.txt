@@ -5,3 +5,4 @@ beautifulsoup4>=4.12.2
 feedparser
 python-dotenv
 loguru
+httpx

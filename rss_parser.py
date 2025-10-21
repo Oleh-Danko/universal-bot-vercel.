@@ -1,41 +1,32 @@
-import requests
-import feedparser
-import logging
+import aiohttp
+from bs4 import BeautifulSoup
 
-logger = logging.getLogger("RSSParser")
+RSS_SOURCES = [
+    "https://epravda.com.ua/finances",
+    "https://epravda.com.ua/columns",
+    "https://www.reuters.com/business",
+    "https://www.reuters.com/markets",
+    "https://www.reuters.com/technology",
+    "https://www.ft.com/companies",
+    "https://www.ft.com/technology",
+    "https://www.ft.com/markets",
+    "https://www.ft.com/opinion",
+    "https://www.bbc.com/business",
+]
 
-def fetch_rss_news(url: str = "http://feeds.bbci.co.uk/news/world/rss.xml") -> list[dict]:
-    """
-    Отримує всі доступні новини з RSS-стрічки.
-    Без жодного обмеження — повертає повний список feed.entries.
-    """
-    try:
-        # Отримання RSS
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        
-        # Парсинг RSS через feedparser
-        feed = feedparser.parse(response.content)
-        news_list = []
-
-        for entry in feed.entries:
-            title = getattr(entry, 'title', None)
-            link = getattr(entry, 'link', None)
-            summary = getattr(entry, 'summary', '')
-            published = getattr(entry, 'published', '')
-
-            if title and link:
-                news_list.append({
-                    "title": title,
-                    "link": link,
-                    "summary": summary,
-                    "published": published,
-                    "source": feed.feed.get("title", "Unknown Source")
-                })
-
-        logger.info(f"✅ Завантажено {len(news_list)} новин із RSS: {url}")
-        return news_list
-
-    except Exception as e:
-        logger.error(f"❌ Помилка під час парсингу RSS ({url}): {e}")
-        return []
+async def fetch_rss_news():
+    results = []
+    async with aiohttp.ClientSession() as session:
+        for url in RSS_SOURCES:
+            try:
+                async with session.get(url) as response:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, "html.parser")
+                    for a in soup.find_all("a", href=True):
+                        title = a.get_text(strip=True)
+                        link = a["href"]
+                        if title and link:
+                            results.append({"title": title, "link": link, "source": url})
+            except:
+                continue
+    return results

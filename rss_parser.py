@@ -2,46 +2,40 @@ import requests
 import feedparser
 import logging
 
-# Кількість новин не обмежена (None), але для безпеки встановлено високий ліміт.
-MAX_NEWS_ITEMS = 50 
 logger = logging.getLogger("RSSParser")
 
-def fetch_rss_news(url: str) -> list[dict]:
+def fetch_rss_news(url: str = "http://feeds.bbci.co.uk/news/world/rss.xml") -> list[dict]:
     """
-    Отримує та парсить RSS-стрічку за заданим URL.
-    ЛІМІТ ВІДСУТНІЙ, повертає усі доступні новини (до MAX_NEWS_ITEMS).
+    Отримує всі доступні новини з RSS-стрічки.
+    Без жодного обмеження — повертає повний список feed.entries.
     """
     try:
-        # Отримання даних RSS
+        # Отримання RSS
         response = requests.get(url, timeout=10)
-        response.raise_for_status() # Перевіряємо на помилки HTTP
+        response.raise_for_status()
         
-        # Парсинг стрічки
+        # Парсинг RSS через feedparser
         feed = feedparser.parse(response.content)
-        
         news_list = []
-        # Обробляємо всі наявні записи або до MAX_NEWS_ITEMS
-        entries_to_process = feed.entries
-        if MAX_NEWS_ITEMS is not None:
-             entries_to_process = feed.entries[:MAX_NEWS_ITEMS]
 
-        for entry in entries_to_process:
-            # Додаємо лише, якщо є необхідні поля
+        for entry in feed.entries:
             title = getattr(entry, 'title', None)
             link = getattr(entry, 'link', None)
+            summary = getattr(entry, 'summary', '')
+            published = getattr(entry, 'published', '')
 
             if title and link:
                 news_list.append({
-                    'title': title,
-                    'link': link,
+                    "title": title,
+                    "link": link,
+                    "summary": summary,
+                    "published": published,
+                    "source": feed.feed.get("title", "Unknown Source")
                 })
 
-        logger.info(f"Successfully fetched {len(news_list)} items from RSS.")
+        logger.info(f"✅ Завантажено {len(news_list)} новин із RSS: {url}")
         return news_list
 
-    except requests.exceptions.RequestException as req_err:
-        logger.error(f"Request error for RSS: {req_err}")
     except Exception as e:
-        logger.error(f"General error during RSS parsing: {e}")
-    
-    return []
+        logger.error(f"❌ Помилка під час парсингу RSS ({url}): {e}")
+        return []

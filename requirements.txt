@@ -1,8 +1,4 @@
-aiogram==3.13.1
-aiohttp==3.9.5
-requests>=2.28.0
-beautifulsoup4>=4.12.2
-feedparser
-python-dotenv
-loguru
-httpx
+aiogram==3.22.0
+beautifulsoup4==4.14.2
+requests==2.32.5
+feedparser==6.0.12

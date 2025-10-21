@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: universal-news-bot
     env: python
     buildCommand: "pip install -r requirements.txt && playwright install"
@@ -7,3 +7,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.x
+      - key: BOT_TOKEN
+        value: 8392167879:AAG9GgPCXrajvdZca5vJcYopk3HO5w2hBhE
+      - key: ADMIN_ID
+        value: 6680030792
+      - key: WEBHOOK_URL
+        value: https://universal-bot-live.onrender.com

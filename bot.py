@@ -1,18 +1,16 @@
 import os
 import logging
+import asyncio 
 from aiohttp import web
+
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiogram.client.default import DefaultBotProperties 
 
-import html 
-import asyncio 
-
-# >>> ІМПОРТ ПАРСЕРА ТА МЕНЕДЖЕРА КЕШУ
-from cache_manager import CacheManager 
-from parser import run_full_parser # <-- ТЕПЕР МИ ІМПОРТУЄМО ФУНКЦІЮ ПАРСЕРА
+# >>> ВИПРАВЛЕНО ІМПОРТ: тепер використовуємо функцію з CacheManager
+from cache_manager import CacheManager, run_cache_update 
 
 # === CONFIG & INIT ===
 logging.basicConfig(level=logging.INFO)
@@ -31,7 +29,7 @@ WEBHOOK_BASE = os.getenv("WEBHOOK_URL", "https://universal-bot-live.onrender.com
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 
-# ВИПРАВЛЕНО: Використовуємо DefaultBotProperties для aiogram 3.7+
+# Ініціалізація Бота та Диспетчера
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown")) 
 dp = Dispatcher()
 
@@ -41,23 +39,23 @@ cache_manager = CacheManager()
 
 # === ФОНОВА ЗАДАЧА: ПАРСЕР ===
 async def run_parser_background():
-    """Запускає парсер у нескінченному циклі з інтервалом."""
-    # ПЕРША ЗАГРУЗКА ПРИ СТАРТІ (необхідно, щоб кеш не був порожнім)
-    logger.info("Starting initial parser run...")
-    # Ми не чекаємо завершення парсера, просто запускаємо його
-    await run_full_parser()
-    logger.info("Initial parser run finished.")
+    """Запускає оновлення кешу у нескінченному циклі з інтервалом."""
+    
+    # ПЕРША ЗАГРУЗКА ПРИ СТАРТІ (Чекаємо, щоб вона завершилася, щоб кеш не був порожнім)
+    logger.info("Starting initial cache update (running run_cache_update())...")
+    # Викликаємо функцію, яка виконує парсинг та зберігає кеш
+    await run_cache_update() 
+    logger.info("Initial cache update finished.")
     
     # ПОДАЛЬШИЙ ЦИКЛ ОНОВЛЕННЯ (раз на 60 хвилин)
     while True:
-        # Чекаємо 60 хвилин (3600 секунд)
-        await asyncio.sleep(3600) 
+        await asyncio.sleep(3600) # Чекаємо 1 годину
         try:
-            logger.info("Starting scheduled parser run...")
-            await run_full_parser()
-            logger.info("Scheduled parser run finished.")
+            logger.info("Starting scheduled cache update...")
+            await run_cache_update()
+            logger.info("Scheduled cache update finished.")
         except Exception as e:
-            logger.error(f"Error during scheduled parser run: {e}")
+            logger.error(f"Error during scheduled cache update: {e}")
 
 
 # === HANDLERS ===
@@ -84,11 +82,12 @@ async def news_cmd(message: Message):
     try:
         # 1. Завантажуємо кеш
         cache_data = cache_manager.load_cache()
-        articles = cache_data.get('articles', [])
+        articles = cache_data.get('articles', []) # ВИПРАВЛЕНО: очікуємо ключ 'articles'
         
         # Обрізаємо час для красивого відображення (з безпечною перевіркою)
         timestamp = cache_data.get('timestamp', 'Невідомо')
         
+        # ВИПРАВЛЕННЯ NoneType ПОМИЛКИ: Перевіряємо, чи це рядок, перш ніж обрізати
         if isinstance(timestamp, str) and timestamp != 'Невідомо':
             timestamp = timestamp[:16].replace('T', ' ')
 
@@ -116,7 +115,7 @@ async def news_cmd(message: Message):
                 # Заголовок джерела
                 formatted_messages.append(f"\n\n\n**-- {current_source} --**") 
             
-            # Екрануємо символи для безпечного Markdown (дуже важливо!)
+            # Екрануємо символи для безпечного Markdown 
             title_escaped = n['title'].replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
 
             # Очищення посилання BBC від трекінгових параметрів
@@ -124,7 +123,10 @@ async def news_cmd(message: Message):
             if 'bbc.co.uk' in link_text:
                  link_text = link_text.split('?at_medium')[0]
             
-            formatted_messages.append(f"📰 *{title_escaped}*\n[Читати повністю]({link_text})")
+            # ВИПРАВЛЕНО: Додано перевірку на link_text, щоб уникнути помилок в Markdown
+            link_display = f"[Читати повністю]({link_text})" if link_text else ""
+
+            formatted_messages.append(f"📰 *{title_escaped}*\n{link_display}")
             source_counts[source_name] = source_counts.get(source_name, 0) + 1
 
         # 3. НАДІЙНА ВІДПРАВКА ПОВІДОМЛЕНЬ ЧАСТИНАМИ 
@@ -169,7 +171,6 @@ async def on_startup(app):
     logger.info("✅ Webhook successfully set.")
     
     # !!! КЛЮЧОВИЙ МОМЕНТ: ЗАПУСК ПАРСЕРА ЯК ФОНОВОЇ ЗАДАЧІ !!!
-    # Це гарантує, що парсер працюватиме ПАРАЛЕЛЬНО з веб-сервером
     asyncio.create_task(run_parser_background())
     logger.info("✅ Parser background task scheduled.")
 

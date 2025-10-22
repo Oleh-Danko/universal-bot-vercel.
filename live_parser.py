@@ -1,288 +1,226 @@
-# live_parser.py
 import re
 import asyncio
+from typing import List, Dict
 import logging
-from typing import List, Dict, Tuple
+
 import aiohttp
 from bs4 import BeautifulSoup
 
-log = logging.getLogger("live-parser")
+log = logging.getLogger("news-bot.parser")
 
-# ---------- Налаштування ----------
-TIMEOUT = aiohttp.ClientTimeout(total=20)
-UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36"
+EP_FINANCES_URL = "https://epravda.com.ua/finances/"
+
+# Патерн «нормальної» статті Epravda:
+# .../finances/slug-813123/
+ARTICLE_LINK_RE = re.compile(r"/finances/[^/]*-\d{5,}/?$")
+
+# Фільтр навігації/рубрики/проєкти — їх відсіємо
+BLACKLIST_PARTS = (
+    "/about",
+    "/rules",
+    "/projects/",
+    "/press-release",
+    "/publications/",
+    "/columns/",
+    "/weeklycharts",
+    "/land/",
+    "/news/",  # на /finances/ буває лінк на сторінку розділу NEWS — відсіюємо
+    "/interview/",
+    "/privacy-policy",
+    "/mediakit",
+    "/about/",
+    "/projects/",
 )
-HEADERS = {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9,uk;q=0.8"}
 
-MAX_PER_SOURCE = 60  # скільки максимум лінків брати з одного сайту
 
-# ---------- Утиліти фільтрації ----------
-BAD_WORDS = {
-    "privacy", "cookies", "terms", "contact", "about", "help",
-    "subscribe", "newsletter", "signin", "login", "account",
-    "advertise", "mediakit", "faq", "jobs", "careers", "events",
-    "podcast", "video", "watch-live", "play", "bbc.com/usingthebbc",
-    "editorialguidelines", "bbc.co.uk/accessibility", "store", "shop"
-}
+def _clean_text(s: str) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()
 
-def looks_like_nav(title: str) -> bool:
-    t = title.strip().lower()
-    if len(t) < 8:  # “Home”, “More”, “News”
-        return True
-    # короткі рубрики/розділи без контексту
-    if t in {"home", "news", "business", "markets", "opinion", "technology",
-             "world", "europe", "africa", "asia", "sport"}:
-        return True
-    return False
 
-def link_has_bad_words(href: str) -> bool:
-    h = href.lower()
-    return any(bad in h for bad in BAD_WORDS)
-
-def clean_text(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "")).strip()
-
-def accept_len(title: str) -> bool:
-    # уникаємо меню типу “Europe”, “Contact us”
-    t = title.strip()
-    return len(t) >= 15  # ти просив >5-10 символів; ставлю трішки вище, щоб відсіяти сміття
-
-# ---------- Список джерел (URL -> назва для виводу) ----------
-SOURCES: List[Tuple[str, str]] = [
-    ("https://www.bbc.com/business", "BBC (Business)"),
-
-    ("https://www.reuters.com/business", "Reuters (Business)"),
-    ("https://www.reuters.com/markets", "Reuters (Markets)"),
-    ("https://www.reuters.com/technology", "Reuters (Technology)"),
-
-    ("https://www.ft.com/companies", "FT (Companies)"),
-    ("https://www.ft.com/markets", "FT (Markets)"),
-    ("https://www.ft.com/technology", "FT (Technology)"),
-    ("https://www.ft.com/opinion", "FT (Opinion)"),
-
-    ("https://epravda.com.ua/finances", "Epravda (Finances)"),
-    ("https://epravda.com.ua/columns",  "Epravda (Columns)"),
-]
-
-# ---------- Парсери по сайтах ----------
-async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
-    try:
-        async with session.get(url, headers=HEADERS) as r:
-            if r.status != 200:
-                raise aiohttp.ClientResponseError(
-                    r.request_info, r.history, status=r.status, message="bad status", headers=r.headers
-                )
-            return await r.text()
-    except Exception as e:
-        log.warning(f"Fetch failed {url}: {e}")
-        return ""
-
-# BBC: беремо тільки справжні статті (мають шаблон /news/articles/...)
-def parse_bbc(html: str) -> List[Dict]:
-    soup = BeautifulSoup(html, "html.parser")
-    out: List[Dict] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        title = clean_text(a.get_text())
-        if not href or not title:
-            continue
-        if href.startswith("/"):
-            href = "https://www.bbc.com" + href
-        # тільки сторінки-статті
-        if "bbc.com/news/articles/" not in href:
-            continue
-        if looks_like_nav(title) or link_has_bad_words(href) or not accept_len(title):
-            continue
-
-        # опис (саблайн) поруч/всередині картки
-        desc = None
-        card = a.find_parent(["div", "article", "li"])
-        if card:
-            p = card.find("p")
-            if p:
-                desc = clean_text(p.get_text())
-
-        out.append({"title": title, "link": href, "desc": desc})
-        if len(out) >= MAX_PER_SOURCE:
-            break
-    return out
-
-# Reuters: часто 401/403 без UA або з GEO; беремо тільки новини з /business|/markets|/technology/ та
-# посилання з явними ідентифікаторами (idUS..., /article/)
-def parse_reuters(html: str) -> List[Dict]:
-    soup = BeautifulSoup(html, "html.parser")
-    out: List[Dict] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        title = clean_text(a.get_text())
-        if not href or not title:
-            continue
-        if href.startswith("/"):
-            href = "https://www.reuters.com" + href
-        h = href.lower()
-        if not ("reuters.com" in h and (
-            "/business/" in h or "/markets/" in h or "/technology/" in h
-        )):
-            continue
-        # намагаємося залишати саме матеріали
-        if not ("/id" in h or "/article/" in h or re.search(r"/\d{4}/\d{2}/\d{2}/", h)):
-            continue
-        if looks_like_nav(title) or link_has_bad_words(href) or not accept_len(title):
-            continue
-
-        desc = None
-        card = a.find_parent(["div", "article", "li"])
-        if card:
-            p = card.find("p")
-            if p:
-                desc = clean_text(p.get_text())
-
-        out.append({"title": title, "link": href, "desc": desc})
-        if len(out) >= MAX_PER_SOURCE:
-            break
-    return out
-
-# FT: беремо промо-статті /content/<uuid>
-def parse_ft(html: str) -> List[Dict]:
-    soup = BeautifulSoup(html, "html.parser")
-    out: List[Dict] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        title = clean_text(a.get_text())
-        if not href or not title:
-            continue
-        if href.startswith("/"):
-            href = "https://www.ft.com" + href
-        if "ft.com/content/" not in href:
-            continue
-        if looks_like_nav(title) or link_has_bad_words(href) or not accept_len(title):
-            continue
-
-        desc = None
-        card = a.find_parent(["div", "article", "li"])
-        if card:
-            # FT часто кладе опис у <p> або <span> поруч
-            p = card.find("p")
-            if p:
-                desc = clean_text(p.get_text())
-
-        out.append({"title": title, "link": href, "desc": desc})
-        if len(out) >= MAX_PER_SOURCE:
-            break
-    return out
-
-# Epravda: залишаємо тільки матеріали (не розділи/меню).
-# Для finances — лишаємо посилання з /finances/... (а не /about/, /projects/ тощо).
-# Для columns — лишаємо посилання з /biznes|/svit|/power|/tehnologiji|/finances/ ДЕ Є СТАТТЯ.
-EP_BAD_PARTS = {
-    "/about/", "/rules/", "/projects/", "/mediakit/", "/press-release/",
-    "/projects/", "/publications/", "/interview/", "/projects/",
-    "/weeklycharts/", "/land/", "/projects/", "/club.", "privacy-policy"
-}
-
-def _is_epravda_article(href: str, page: str) -> bool:
-    # Жорсткі обмеження, щоб не захоплювати “Новини”, “Про проект”, “Підтримати”, тощо
-    h = href.lower()
-    if not h.startswith("https://epravda.com.ua/"):
+def _looks_like_article_href(href: str) -> bool:
+    if not href or not href.startswith("http"):
         return False
-    if any(b in h for b in EP_BAD_PARTS):
+    # тільки домен epravda
+    if "epravda.com.ua" not in href:
         return False
-    if page.endswith("/finances"):
-        # беремо фінансові матеріали/новини
-        return "/finances/" in h
-    if page.endswith("/columns"):
-        # колонки зазвичай мають рубрики в шляху: /biznes/, /power/, /tehnologiji/, /svit/ тощо + ID в кінці
-        return bool(re.search(r"/(biznes|power|tehnologiji|svit|finances)/", h)) and re.search(r"-\d+/?$", h)
-    return False
+    # чорний список
+    if any(x in href for x in BLACKLIST_PARTS):
+        return False
+    # повинен збігатися з патерном статті
+    return bool(ARTICLE_LINK_RE.search(href))
 
-def parse_epravda(html: str, page_url: str) -> List[Dict]:
+
+async def _fetch_html(session: aiohttp.ClientSession, url: str) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    }
+    async with session.get(url, headers=headers, timeout=20) as resp:
+        resp.raise_for_status()
+        return await resp.text()
+
+
+def _extract_desc(block) -> str:
+    """
+    Шукаємо короткий опис/підзаголовок біля заголовку:
+    - <p> всередині блоку
+    - елементи з класами '*summary*', '*lead*', 'post_item_*'
+    - сусідні <div> з текстом
+    """
+    # варіант 1: явний підзаголовок
+    for sel in ["p", "div", "span"]:
+        tag = block.find(sel)
+        if tag:
+            text = _clean_text(tag.get_text(" ", strip=True))
+            if text and len(text) > 25:
+                return text
+
+    # варіант 2: подивитися братні елементи
+    sib = block.find_next_sibling()
+    if sib:
+        text = _clean_text(sib.get_text(" ", strip=True))
+        if text and len(text) > 25:
+            return text
+
+    return ""
+
+
+def _parse_finances_list(html: str) -> List[Dict]:
     soup = BeautifulSoup(html, "html.parser")
-    out: List[Dict] = []
-    # Основні заголовки зазвичай у h2/h3 з <a>
-    for h in soup.find_all(["h2", "h3", "h4"]):
-        a = h.find("a", href=True)
-        if not a:
-            continue
-        href = a["href"]
-        title = clean_text(a.get_text())
-        if not href or not title:
-            continue
-        if href.startswith("/"):
-            href = "https://epravda.com.ua" + href
-        if not _is_epravda_article(href, page_url):
-            continue
-        if looks_like_nav(title) or link_has_bad_words(href) or not accept_len(title):
-            continue
 
-        # опис поруч (якщо є)
-        desc = None
-        parent = h.parent
-        if parent:
-            p = parent.find("p")
-            if p:
-                desc = clean_text(p.get_text())
+    # Основні контейнери, де зазвичай лежать картки/пости
+    containers = []
+    possible = [
+        ("section", {"id": "main-content"}),
+        ("section", {"class": re.compile(r"(list|feed|articles|content)", re.I)}),
+        ("div", {"class": re.compile(r"(post|article|list|feed)", re.I)}),
+        ("main", {}),
+    ]
+    for name, attrs in possible:
+        found = soup.find(name, attrs=attrs)
+        if found:
+            containers.append(found)
+    if not containers:
+        containers = [soup]  # фолбек — шукаємо по всій сторінці
 
-        out.append({"title": title, "link": href, "desc": desc})
-        if len(out) >= MAX_PER_SOURCE:
-            break
+    results: List[Dict] = []
+    seen = set()
 
-    # Фолбек: інколи заголовки просто як <a> в картках
-    if not out:
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            title = clean_text(a.get_text())
-            if not href or not title:
+    # Стратегія:
+    # 1) картки статей (article|div) зі всередині — шукаємо заголовкові <a> з href на статтю
+    # 2) фолбек — знайти всі <a> з підходящим href по контейнеру
+    for root in containers:
+        # 1) картки
+        for card in root.find_all(["article", "div", "li"], recursive=True):
+            a = card.find("a", href=True)
+            if not a:
                 continue
+            href = a["href"]
+            if href.startswith("//"):
+                href = "https:" + href
             if href.startswith("/"):
                 href = "https://epravda.com.ua" + href
-            if not _is_epravda_article(href, page_url):
+
+            if not _looks_like_article_href(href):
                 continue
-            if looks_like_nav(title) or link_has_bad_words(href) or not accept_len(title):
+
+            title = _clean_text(a.get_text(" ", strip=True))
+            # іноді <a><h3>Заголовок</h3></a>
+            if not title:
+                h = a.find(["h2", "h3", "h4"])
+                if h:
+                    title = _clean_text(h.get_text(" ", strip=True))
+
+            if not title or len(title) < 8:
                 continue
-            desc = None
-            card = a.find_parent(["article", "div", "li"])
-            if card:
-                p = card.find("p")
-                if p:
-                    desc = clean_text(p.get_text())
-            out.append({"title": title, "link": href, "desc": desc})
-            if len(out) >= MAX_PER_SOURCE:
-                break
 
-    return out
+            if href in seen:
+                continue
+            seen.add(href)
 
-# ---------- Диспетчер по джерелах ----------
-async def fetch_source(session: aiohttp.ClientSession, url: str, name: str) -> Tuple[str, List[Dict]]:
-    html = await fetch_html(session, url)
-    items: List[Dict] = []
-    try:
-        if not html:
-            return name, []
+            desc = _extract_desc(card)
+            results.append({
+                "title": title,
+                "link": href,
+                "source": "Epravda (Finances)",
+                "desc": desc
+            })
 
-        if name.startswith("BBC"):
-            items = parse_bbc(html)
-        elif name.startswith("Reuters"):
-            items = parse_reuters(html)
-        elif name.startswith("FT"):
-            items = parse_ft(html)
-        elif name.startswith("Epravda"):
-            items = parse_epravda(html, url)
-        else:
-            items = []
-    except Exception as e:
-        log.warning(f"Parse failed {name}: {e}")
-        items = []
+        # 2) фолбек — усі <a> у контейнері
+        for a in root.find_all("a", href=True):
+            href = a["href"]
+            if href.startswith("//"):
+                href = "https:" + href
+            if href.startswith("/"):
+                href = "https://epravda.com.ua" + href
+            if not _looks_like_article_href(href):
+                continue
 
-    return name, items
+            if href in seen:
+                continue
 
-async def fetch_all_sources_grouped() -> Dict[str, List[Dict]]:
-    grouped: Dict[str, List[Dict]] = {name: [] for _, name in SOURCES}
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-        tasks = [fetch_source(session, url, name) for url, name in SOURCES]
-        for coro in asyncio.as_completed(tasks):
-            name, items = await coro
-            grouped[name] = items
-    return grouped
+            title = _clean_text(a.get_text(" ", strip=True))
+            if not title or len(title) < 8:
+                # спроба взяти з дочірніх h2/h3
+                h = a.find(["h2", "h3", "h4"])
+                if h:
+                    title = _clean_text(h.get_text(" ", strip=True))
+            if not title or len(title) < 8:
+                continue
+
+            # спроба дістати опис з батьківського блоку
+            desc = ""
+            parent = a.parent
+            if parent:
+                desc = _extract_desc(parent)
+
+            seen.add(href)
+            results.append({
+                "title": title,
+                "link": href,
+                "source": "Epravda (Finances)",
+                "desc": desc
+            })
+
+    # Легка нормалізація/фільтрація:
+    # — викидаємо підозріло короткі заголовки
+    filtered = []
+    for it in results:
+        t = it["title"]
+        if len(t) < 8:
+            continue
+        filtered.append(it)
+
+    # Унікалізуємо ще раз на всяк випадок (за link)
+    uniq = []
+    seen_links = set()
+    for it in filtered:
+        if it["link"] in seen_links:
+            continue
+        seen_links.add(it["link"])
+        uniq.append(it)
+
+    # Сортуємо за появою на сторінці (перші зверху)
+    return uniq
+
+
+async def fetch_epravda_finances() -> List[Dict]:
+    """
+    Повертає список новин виключно з https://epravda.com.ua/finances/
+    Кожен елемент: {title, link, source, desc}
+    """
+    timeout = aiohttp.ClientTimeout(total=25)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            html = await _fetch_html(session, EP_FINANCES_URL)
+        except Exception as e:
+            log.warning("Fetch epravda finances failed: %s", e)
+            return []
+        return _parse_finances_list(html)
+
+
+# ===== нижче інші джерела — ВИМКНЕНО (залишені як коментар-шаблон) =====
+# async def fetch_bloomberg_latest(): ...
+# async def fetch_reuters_business(): ...
+# async def fetch_ft_companies(): ...
+# і т.д.

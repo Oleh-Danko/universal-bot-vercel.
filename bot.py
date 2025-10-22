@@ -9,15 +9,17 @@ from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-from news_parser import collect_all_news  # <-- наш живий парсер
+from live_parser import fetch_all_sources, chunk_messages
 
-# ====== ЛОГИ ======
-logging.basicConfig(level=logging.INFO)
+# ====== ЛОГИ (видно у Render → Logs) ======
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s: %(message)s")
 log = logging.getLogger("news-bot")
 
 # ====== ENV ======
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_BASE = os.environ.get("WEBHOOK_URL")  # напр. https://universal-bot-live.onrender.com
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # 8392167879:AAG9GgPCXrajvdZca5vJcYopk3HO5w2hBhE
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))  # 6680030792
+WEBHOOK_BASE = os.environ.get("WEBHOOK_URL")    # https://universal-bot-live.onrender.com
+
 if not BOT_TOKEN or not WEBHOOK_BASE:
     raise RuntimeError("BOT_TOKEN і WEBHOOK_URL обов'язкові в Environment.")
 
@@ -28,67 +30,37 @@ WEBHOOK_URL = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
-# ====== HANDLERS ======
+# ====== ХЕНДЛЕРИ ======
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer("Привіт. Надішли /news — отримаєш свіжі новини з усіх джерел прямо зараз (без кешу).")
+    await message.answer("👋 Привіт! Надішли /news щоб ЗАРАЗ зібрати свіжі новини з 10 джерел.")
 
 @dp.message(Command("news"))
 async def cmd_news(message: Message):
-    await message.answer("Збираю свіжі новини… Це може зайняти 5–15 сек (10 джерел).")
-
+    await message.answer("⏳ Збираю актуальні новини прямо зараз… (10 джерел)")
     try:
-        news = await collect_all_news()  # живий парсинг тут
-        if not news:
-            await message.answer("Нічого не знайшов. Спробуй ще раз за хвилину.")
+        articles = await fetch_all_sources()
+        if not articles:
+            await message.answer("❌ Нічого не знайшов. Спробуй ще раз трохи пізніше.")
             return
 
-        # відсортуємо (спочатку за джерелом, потім за назвою) — просто для стабільності виводу
-        news.sort(key=lambda x: (x["source"], x["title"]))
+        # формуємо повідомлення й ріжемо по 4000 символів
+        lines = [f"• <a href='{a['link']}'>{a['title']}</a> <i>({a['source']})</i>" for a in articles]
+        text = "📰 <b>Актуальні новини (живий парсинг)</b>\n\n" + "\n".join(lines)
 
-        # чанкуємо під ліміт Телеграма
-        CHUNK_LIMIT = 3900  # запас до 4096
-        buf = ""
-        current_source = None
-        sent = 0
-
-        async def flush():
-            nonlocal buf, sent
-            if buf.strip():
-                await message.answer(buf, disable_web_page_preview=True)
-                await asyncio.sleep(0.25)
-                buf = ""
-
-        for item in news:
-            src = item["source"]
-            if src != current_source:
-                block_header = f"\n\n— <b>{src}</b> —\n"
-            else:
-                block_header = ""
-            line = f"• <a href='{item['link']}'>{item['title']}</a>\n"
-            to_add = block_header + line
-
-            if len(buf) + len(to_add) > CHUNK_LIMIT:
-                await flush()
-            if src != current_source and len(block_header) > 0 and len(block_header) > CHUNK_LIMIT:
-                # захист від абсурдних випадків
-                pass
-            buf += to_add
-            current_source = src
-            sent += 1
-
-        await flush()
-        await message.answer(f"Готово. Відправлено: {sent} новин.")
-
+        for chunk in chunk_messages(text, limit=4000):
+            await message.answer(chunk, disable_web_page_preview=True)
+            await asyncio.sleep(0.2)
+        await message.answer(f"✅ Надіслано: {len(articles)} новин з 10 джерел.")
     except Exception as e:
         log.exception("Помилка в /news: %s", e)
-        await message.answer(f"Сталася помилка під час парсингу: {e}")
+        await message.answer("💥 Сталася помилка під час парсингу. Спробуй ще раз.")
 
-# ====== HEALTH ======
+# ====== HEALTHZ ======
 async def handle_health(request):
     return web.Response(text="OK", status=200)
 
-# ====== START/STOP ======
+# ====== START/STOP HOOKS ======
 async def on_startup(app: web.Application):
     log.info(f"🌐 Starting bot, setting webhook to {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL)
@@ -100,18 +72,22 @@ async def on_shutdown(app: web.Application):
     await bot.session.close()
     log.info("✅ Shutdown complete")
 
-# ====== MAIN ======
+# ====== MAIN (AIOHTTP APP) ======
 def main():
     app = web.Application()
 
-    # реєстрація aiogram на aiohttp
+    # реєструємо хендлери aiogram на aiohttp
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
 
     # healthcheck для Render
-    app.router.add_get("/", handle_health)
-    app.router.add_get("/healthz", handle_health)
+    app.router.add_get("/", handle_health)        # GET /
+    app.router.add_get("/healthz", handle_health) # GET /healthz
 
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    # СЛУХАЄМО САМЕ ЦЕЙ ПОРТ!
     port = int(os.environ.get("PORT", "10000"))
     log.info(f"🚀 Starting web server on 0.0.0.0:{port}")
     web.run_app(app, host="0.0.0.0", port=port)
